@@ -44,6 +44,7 @@ check "installer restarts full stack" grep -q 'systemctl restart easy-onion-gite
 check "doctor compares numeric secret ownership" grep -q "stat -c '%u:%g'.*secret_key" bin/eog-admin
 check "doctor scopes SOCKS publish check to container" grep -q 'docker port.*9050/tcp' bin/eog-admin
 check "backup excludes SHA256SUMS from hash input" grep -q '! -name SHA256SUMS' bin/eog-admin
+check "backup RETURN trap expands work path" grep -q "printf '%q'" bin/eog-admin
 check "ASCII docs" bash -c "! grep -P '[^\x00-\x7F]' README.md AGENTS.md SECURITY.md"
 
 if [[ ${fail} -ne 0 ]]; then

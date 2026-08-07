@@ -198,7 +198,9 @@ cmd_backup() {
   mkdir -p "${EOG_BACKUP_DIR}"
   chmod 700 "${EOG_BACKUP_DIR}"
   work="$(mktemp -d /tmp/eog-backup.XXXXXX)"
-  trap 'rm -rf "${work}"' RETURN
+  # Expand path at trap-set time: with set -u, local work is unbound when RETURN runs.
+  # shellcheck disable=SC2064
+  trap "rm -rf -- $(printf '%q' "${work}")" RETURN
   archive="${EOG_BACKUP_DIR}/easy-onion-gitea-${ts}.tar.gz"
 
   eog_info "Stopping service for consistent SQLite snapshot..."
@@ -243,7 +245,7 @@ EOF
   eog_info "Backup written: ${archive}"
 
   eog_info "Restarting service..."
-  systemctl start "${EOG_SERVICE_NAME}" || eog_compose up -d --remove-orphans
+  systemctl restart "${EOG_SERVICE_NAME}" || eog_compose up -d --remove-orphans
   if ! eog_wait_for_gitea "${HTTP_PORT}" 180; then
     eog_die "service failed to become healthy after backup"
   fi
@@ -258,7 +260,9 @@ cmd_restore() {
   eog_load_config_env
   local work
   work="$(mktemp -d /tmp/eog-restore.XXXXXX)"
-  trap 'rm -rf "${work}"' RETURN
+  # Expand path at trap-set time: with set -u, local work is unbound when RETURN runs.
+  # shellcheck disable=SC2064
+  trap "rm -rf -- $(printf '%q' "${work}")" RETURN
   tar -tzf "${archive}" | grep -q '^backup/MANIFEST$' || eog_die "archive missing backup/MANIFEST"
   tar -xzf "${archive}" -C "${work}"
   [[ -f "${work}/backup/MANIFEST" ]] || eog_die "invalid archive layout"
@@ -337,7 +341,7 @@ cmd_restore() {
     eog_compose build loopback-proxy || true
   fi
 
-  systemctl start "${EOG_SERVICE_NAME}" || eog_compose up -d --remove-orphans
+  systemctl restart "${EOG_SERVICE_NAME}" || eog_compose up -d --remove-orphans
   if ! eog_wait_for_gitea "${HTTP_PORT}" 180; then
     eog_die "Gitea unhealthy after restore"
   fi
