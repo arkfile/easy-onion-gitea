@@ -6,13 +6,15 @@ Run on a disposable Debian/Ubuntu VM with Docker available.
 
 1. Fresh `sudo ./install.sh` completes doctor and initial backup.
 2. Interrupt mid-install (Ctrl-C after Tor starts) and re-run `sudo ./install.sh`; bootstrap resumes and finishes.
-3. Re-run `sudo ./install.sh` on a completed install refreshes static files and exits without rotating secrets.
-4. `curl -fsS http://127.0.0.1:3000/api/healthz` succeeds.
-5. Host listen address is only `127.0.0.1:3000` (or custom `--http-port`).
-6. No host publish of Tor SOCKS on `0.0.0.0:9050`.
-7. `sudo eog-admin onion` prints the hostname; keys are not printed.
-8. Secret files under `/opt/easy-onion-gitea/secrets` are mode `640` owned `root:1000` (or recorded gitea gid).
-9. Reboot; `systemctl status easy-onion-gitea` is active; healthz succeeds.
+3. Leave the oneshot systemd unit active, interrupt bootstrap, and re-run install; the installer stops stale service state and starts all three containers.
+4. Re-run `sudo ./install.sh` on a completed install refreshes static files and exits without rotating secrets.
+5. `curl -fsS http://127.0.0.1:3000/api/healthz` succeeds.
+6. Host listen address is only `127.0.0.1:3000` (or custom `--http-port`).
+7. No Compose host publish of Tor SOCKS; a workstation Tor daemon on `127.0.0.1:9050` does not fail doctor.
+8. `sudo eog-admin onion` prints the hostname; keys are not printed.
+9. Secret files under `/opt/easy-onion-gitea/secrets` are mode `640` with numeric owner/group `0:1000` (or recorded gitea gid).
+10. The sign-in page has no passkey option, ordinary password login works, and `ENABLE_PASSKEY_AUTHENTICATION = false` persists through reinstall, update, backup, and restore.
+11. Reboot; `systemctl status easy-onion-gitea` is active; healthz succeeds.
 
 ## Networking
 

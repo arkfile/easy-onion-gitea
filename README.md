@@ -33,6 +33,8 @@ The installer starts Tor first, waits for the onion hostname, writes Gitea confi
 
 Credentials are written to `~/.easy-onion-gitea/creds.txt` for the installing user (mode 600). Change the bootstrap password after first login. Create individual user accounts for daily work.
 
+Passkey authentication is disabled by default because WebAuthn behavior can vary across Tor Browser security modes. Username/password authentication remains enabled; TOTP two-factor authentication is recommended.
+
 If install is interrupted, run `sudo ./install.sh` again. Incomplete installs resume bootstrap. Completed installs refresh static files and the systemd unit without rotating secrets or the onion identity.
 
 ## Quick VM test checklist

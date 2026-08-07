@@ -177,8 +177,10 @@ eog_record_tor_identity
 eog_ensure_dirs
 
 # Bootstrap: start Tor first for onion hostname, then write app.ini, then full stack.
-# Tear down first so Compose recreates networks when IPAM/subnet pins change.
+# Stop the oneshot unit first so RemainAfterExit cannot make the final start a no-op
+# after an interrupted installation. Tear down so IPAM/subnet changes take effect.
 eog_info "Starting Tor to obtain onion hostname..."
+systemctl stop easy-onion-gitea.service >/dev/null 2>&1 || true
 eog_compose down >/dev/null 2>&1 || true
 eog_compose up -d --remove-orphans tor
 if ! eog_wait_for_file "$(eog_onion_hostname_file)" 180; then
@@ -193,11 +195,12 @@ else
   eog_info "Preserving existing config/app.ini; syncing onion URL and runtime copy"
   eog_update_app_ini_onion "${ONION_HOST}" || eog_render_app_ini "${ONION_HOST}" "${REQUIRE_2FA_FINAL}" "${EOG_INSTALL_ROOT}/config/app.ini.tmpl"
 fi
+eog_enforce_passkey_disabled
 eog_sync_app_ini_to_runtime
 chown -R "${EOG_GITEA_UID}:${EOG_GITEA_GID}" "${EOG_INSTALL_ROOT}/data/gitea"
 
 eog_info "Starting full stack..."
-systemctl start easy-onion-gitea.service || eog_compose up -d --remove-orphans
+systemctl restart easy-onion-gitea.service
 
 if ! eog_wait_for_gitea "${HTTP_PORT}" 180; then
   eog_die "Gitea health check failed on 127.0.0.1:${HTTP_PORT}/api/healthz (try: docker compose --project-directory ${EOG_INSTALL_ROOT} logs gitea)"

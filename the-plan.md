@@ -70,6 +70,8 @@ Acceptance tests and `eog-admin doctor` must prove defense in depth: a direct TC
 
 Disable unnecessary outbound Gitea features by default, including external avatars, OpenID, mail, Actions, and Gitea update checks. Features that introduce new egress paths remain unsupported until their Tor routing is designed and tested.
 
+Disable passkey authentication by default because WebAuthn behavior may vary across Tor Browser security modes. Keep username/password authentication enabled and recommend TOTP two-factor authentication.
+
 The Tor-only requirement applies to traffic originating from the Gitea application. Docker image pulls, operating-system package downloads, and installer downloads originate from the host and are outside this guarantee. Routing the entire host through Tor is not part of v1.
 
 The server Tor SOCKS port remains internal to the Compose project and is not published on the host. Workstation Git clients use their own local Tor daemon; see **`eogit` client command**.

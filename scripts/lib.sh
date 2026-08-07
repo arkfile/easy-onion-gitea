@@ -276,6 +276,48 @@ eog_update_app_ini_onion() {
   eog_sync_app_ini_to_runtime
 }
 
+eog_enforce_passkey_disabled() {
+  local dest="${EOG_INSTALL_ROOT}/config/app.ini"
+  [[ -f ${dest} ]] || return 1
+  awk '
+    BEGIN {
+      in_service = 0
+      saw_service = 0
+      set_key = 0
+    }
+    /^\[service\][[:space:]]*$/ {
+      in_service = 1
+      saw_service = 1
+      print
+      next
+    }
+    in_service && /^\[/ {
+      if (!set_key) {
+        print "ENABLE_PASSKEY_AUTHENTICATION = false"
+        set_key = 1
+      }
+      in_service = 0
+    }
+    in_service && /^[[:space:]]*ENABLE_PASSKEY_AUTHENTICATION[[:space:]]*=/ {
+      if (!set_key) {
+        print "ENABLE_PASSKEY_AUTHENTICATION = false"
+        set_key = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (in_service && !set_key) {
+        print "ENABLE_PASSKEY_AUTHENTICATION = false"
+      } else if (!saw_service) {
+        print ""
+        print "[service]"
+        print "ENABLE_PASSKEY_AUTHENTICATION = false"
+      }
+    }
+  ' "${dest}" | eog_atomic_write "${dest}" 0640 "root:${EOG_GITEA_GID}"
+}
+
 eog_service_start() {
   systemctl start "${EOG_SERVICE_NAME}"
 }

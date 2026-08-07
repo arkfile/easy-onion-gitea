@@ -31,6 +31,7 @@ check "Dockerfile.loopback present" test -f Dockerfile.loopback
 check "app template onion allowlist" grep -q 'ALLOWED_DOMAINS = \*.onion' config/app.ini.tmpl
 check "app template proxy" grep -q 'socks5h://tor:9050' config/app.ini.tmpl
 check "app template SECRET_KEY_URI" grep -q 'SECRET_KEY_URI = file:/run/eog-secrets/secret_key' config/app.ini.tmpl
+check "app template disables passkeys" grep -q 'ENABLE_PASSKEY_AUTHENTICATION = false' config/app.ini.tmpl
 check "torrc hidden service v3" grep -q 'HiddenServiceVersion 3' config/torrc
 check "torrc HiddenServicePort uses static IP" grep -q 'HiddenServicePort 80 172.30.0.10:3000' config/torrc
 check "torrc does not set User (image USER already drops)" bash -c "! grep -qE '^[[:space:]]*User[[:space:]]' config/torrc"
@@ -38,6 +39,10 @@ check "compose pins gitea ipv4_address" grep -q 'ipv4_address: 172.30.0.10' comp
 check "compose internal subnet" grep -q 'subnet: 172.30.0.0/24' compose.yml
 check "scripts executable" test -x install.sh && test -x bin/eog-admin && test -x bin/eogit
 check "install complete marker helper" grep -q 'eog_mark_install_complete' scripts/lib.sh
+check "installer clears stale systemd state" grep -q 'systemctl stop easy-onion-gitea.service' install.sh
+check "installer restarts full stack" grep -q 'systemctl restart easy-onion-gitea.service' install.sh
+check "doctor compares numeric secret ownership" grep -q "stat -c '%u:%g'.*secret_key" bin/eog-admin
+check "doctor scopes SOCKS publish check to container" grep -q 'docker port.*9050/tcp' bin/eog-admin
 check "backup excludes SHA256SUMS from hash input" grep -q '! -name SHA256SUMS' bin/eog-admin
 check "ASCII docs" bash -c "! grep -P '[^\x00-\x7F]' README.md AGENTS.md SECURITY.md"
 

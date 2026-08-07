@@ -78,7 +78,7 @@ cmd_doctor() {
   }
 
   check "install root exists" test -d "${EOG_INSTALL_ROOT}"
-  local mode owner
+  local mode owner owner_ids tor_container gitea_nets
   mode="$(stat -c '%a' "${EOG_INSTALL_ROOT}/config.env")"
   check "config.env mode 640/600" bash -c "[[ ${mode} == 640 || ${mode} == 600 ]]"
   mode="$(stat -c '%a' "${EOG_INSTALL_ROOT}/secrets")"
@@ -88,17 +88,20 @@ cmd_doctor() {
   check "secret_key present" test -f "${EOG_INSTALL_ROOT}/secrets/secret_key"
   mode="$(stat -c '%a' "${EOG_INSTALL_ROOT}/secrets/secret_key")"
   check "secret_key mode 640" bash -c "[[ ${mode} == 640 ]]"
-  owner="$(stat -c '%U:%G' "${EOG_INSTALL_ROOT}/secrets/secret_key")"
-  check "secret_key owner root:${EOG_GITEA_GID}" bash -c "[[ ${owner} == root:${EOG_GITEA_GID} ]]"
+  owner_ids="$(stat -c '%u:%g' "${EOG_INSTALL_ROOT}/secrets/secret_key")"
+  check "secret_key owner root:${EOG_GITEA_GID}" bash -c "[[ ${owner_ids} == 0:${EOG_GITEA_GID} ]]"
   check "onion hostname present" test -s "$(eog_onion_hostname_file)"
   mode="$(stat -c '%a' "${EOG_INSTALL_ROOT}/data/tor/hidden_service")"
   check "hidden_service dir mode 700" bash -c "[[ ${mode} == 700 ]]"
   check "localhost bind only" bash -c "ss -ltn | grep -E ':${HTTP_PORT}\\b' | grep -q '127.0.0.1:${HTTP_PORT}'"
-  if ss -ltn 2>/dev/null | grep -E '9050' | grep -qE '0\\.0\\.0\\.0|\\*:9050|[[:space:]]:::9050'; then
+  # Inspect the Tor container mapping. A host Tor client may legitimately listen
+  # on 127.0.0.1:9050 and must not be mistaken for a Compose port publish.
+  tor_container="$(eog_compose ps -q tor)"
+  if [[ -n ${tor_container} ]] && ! docker port "${tor_container}" 9050/tcp 2>/dev/null | grep -q .; then
+    printf 'OK  %s\n' "tor socks not published on host"
+  else
     printf 'FAIL %s\n' "tor socks not published on host"
     failed=1
-  else
-    printf 'OK  %s\n' "tor socks not published on host"
   fi
   # Gitea must stay on the internal network only (no egress/publish attachment).
   gitea_nets="$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$(eog_compose ps -q gitea)" 2>/dev/null || true)"
@@ -151,13 +154,13 @@ cmd_doctor() {
   if eog_compose exec -T gitea /bin/sh -c '
     unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
     if command -v wget >/dev/null 2>&1; then
-      wget -q -T 3 -O /dev/null http://1.1.1.1 && exit 0
+      wget -q -T 3 -O /dev/null http://1.1.1.1 2>/dev/null && exit 0
     fi
     if command -v curl >/dev/null 2>&1; then
-      curl -fsS --max-time 3 http://1.1.1.1 >/dev/null && exit 0
+      curl -fsS --max-time 3 http://1.1.1.1 >/dev/null 2>&1 && exit 0
     fi
     if command -v nc >/dev/null 2>&1; then
-      nc -z -w 3 1.1.1.1 443 && exit 0
+      nc -z -w 3 1.1.1.1 443 >/dev/null 2>&1 && exit 0
     fi
     exit 1
   '; then
@@ -179,6 +182,7 @@ cmd_doctor() {
   check "app.ini ROOT_URL uses onion" grep -Eq '^ROOT_URL = http://.+\.onion/' "${EOG_INSTALL_ROOT}/config/app.ini"
   check "SECRET_KEY_URI uses secrets mount" grep -Eq '^SECRET_KEY_URI = file:/run/eog-secrets/secret_key' "${EOG_INSTALL_ROOT}/config/app.ini"
   check "ALLOWED_DOMAINS not star" bash -c "! grep -Eq '^ALLOWED_DOMAINS = \\*$' '${EOG_INSTALL_ROOT}/config/app.ini'"
+  check "passkey authentication disabled" grep -Eq '^ENABLE_PASSKEY_AUTHENTICATION = false$' "${EOG_INSTALL_ROOT}/config/app.ini"
 
   if [[ ${failed} -ne 0 ]]; then
     eog_die "doctor found problems"
@@ -321,6 +325,7 @@ cmd_restore() {
       chmod 0640 "${EOG_INSTALL_ROOT}/secrets/${key}"
     fi
   done
+  eog_enforce_passkey_disabled
   eog_sync_app_ini_to_runtime
 
   # Rebuild local images if Dockerfiles are present so pruned hosts can recover.
@@ -398,6 +403,8 @@ EOF
       eog_render_app_ini "${onion}" "${require_2fa}" "${EOG_INSTALL_ROOT}/config/app.ini.tmpl"
     fi
   fi
+  eog_enforce_passkey_disabled
+  eog_sync_app_ini_to_runtime
 
   docker pull "${GITEA_IMAGE}"
   eog_compose build tor loopback-proxy
