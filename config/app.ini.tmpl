@@ -1,0 +1,100 @@
+APP_NAME = easy-onion-gitea
+RUN_MODE = prod
+WORK_PATH = /data/gitea
+
+[server]
+PROTOCOL = http
+DOMAIN = __ONION_HOST__
+HTTP_PORT = 3000
+ROOT_URL = http://__ONION_HOST__/
+LOCAL_ROOT_URL = http://gitea:3000/
+DISABLE_SSH = true
+START_SSH_SERVER = false
+OFFLINE_MODE = true
+PUBLIC_URL_DETECTION = never
+LANDING_PAGE = login
+
+[database]
+DB_TYPE = sqlite3
+PATH = /data/gitea/gitea.db
+
+[security]
+INSTALL_LOCK = true
+DISABLE_GIT_HOOKS = true
+DISABLE_QUERY_AUTH_TOKEN = true
+PASSWORD_HASH_ALGO = pbkdf2
+# Read SECRET_KEY from the mounted secrets file (do not paste the raw key here).
+SECRET_KEY_URI = file:/run/eog-secrets/secret_key
+INTERNAL_TOKEN = __INTERNAL_TOKEN__
+
+[oauth2]
+JWT_SECRET = __JWT_SECRET__
+
+[service]
+DISABLE_REGISTRATION = true
+REQUIRE_SIGNIN_VIEW = true
+DEFAULT_KEEP_EMAIL_PRIVATE = true
+DEFAULT_ORG_MEMBER_VISIBLE = false
+ENABLE_NOTIFY_MAIL = false
+ENABLE_CAPTCHA = false
+ALLOW_ONLY_EXTERNAL_REGISTRATION = false
+SHOW_REGISTRATION_BUTTON = false
+AUTO_WATCH_NEW_REPOS = false
+ENFORCE_TWO_FACTOR_AUTH = __REQUIRE_2FA__
+
+[openid]
+ENABLE_OPENID_SIGNIN = false
+ENABLE_OPENID_SIGNUP = false
+
+[mailer]
+ENABLED = false
+
+[picture]
+DISABLE_GRAVATAR = true
+ENABLE_FEDERATED_AVATAR = false
+
+[repository]
+FORCE_PRIVATE = true
+DEFAULT_PRIVATE = true
+DISABLE_HTTP_GIT = false
+ENABLE_PUSH_CREATE_USER = false
+ENABLE_PUSH_CREATE_ORG = false
+
+[repository.upload]
+ENABLED = true
+
+[actions]
+ENABLED = false
+
+[packages]
+ENABLED = false
+
+[migrations]
+ALLOWED_DOMAINS = *.onion
+BLOCKED_DOMAINS =
+ALLOW_LOCALNETWORKS = false
+SKIP_TLS_VERIFY = false
+
+[proxy]
+PROXY_ENABLED = true
+PROXY_URL = socks5h://tor:9050
+PROXY_HOSTS = **
+
+[webhook]
+PROXY_URL = socks5h://tor:9050
+PROXY_HOSTS = **
+
+[git]
+DISABLE_DIFF_STATS = false
+
+[other]
+SHOW_FOOTER_VERSION = false
+SHOW_FOOTER_TEMPLATE_LOAD_TIME = false
+ENABLE_SITEMAP = false
+ENABLE_FEED = false
+
+[cron.update_checker]
+ENABLED = false
+
+[ui]
+DEFAULT_THEME = gitea-auto

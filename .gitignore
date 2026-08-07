@@ -1,0 +1,8 @@
+*.tmp
+*.swp
+*~
+.DS_Store
+/data/
+/secrets/
+config.env
+config/app.ini

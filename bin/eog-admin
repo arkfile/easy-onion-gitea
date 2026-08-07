@@ -1,0 +1,467 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+resolve_root() {
+  if [[ -d /opt/easy-onion-gitea/scripts ]]; then
+    printf '%s\n' /opt/easy-onion-gitea
+    return
+  fi
+  local self
+  self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s\n' "${BASH_SOURCE[0]}")"
+  cd "$(dirname "${self}")/.." && pwd
+}
+
+ROOT="$(resolve_root)"
+# shellcheck source=/dev/null
+source "${ROOT}/scripts/lib.sh"
+EOG_INSTALL_ROOT="${INSTALL_ROOT:-/opt/easy-onion-gitea}"
+# Defaults before config.env load (shellcheck SC2153).
+HTTP_PORT="${HTTP_PORT:-3000}"
+ADMIN_USER="${ADMIN_USER:-gitea-admin}"
+
+usage() {
+  cat <<'EOF'
+Usage: eog-admin <command> [args]
+
+Commands:
+  status
+  doctor
+  backup
+  restore PATH
+  update [RELEASE_DIR]
+  onion
+  reset-admin-password
+  apply-config
+EOF
+}
+
+cmd_status() {
+  eog_require_root
+  eog_load_config_env
+  echo "=== systemd ==="
+  systemctl is-active "${EOG_SERVICE_NAME}" || true
+  systemctl is-enabled "${EOG_SERVICE_NAME}" || true
+  echo "=== compose ==="
+  eog_compose ps || true
+  echo "=== gitea health ==="
+  if curl -fsS --max-time 5 "http://127.0.0.1:${HTTP_PORT}/api/healthz" >/dev/null; then
+    echo "gitea: healthy"
+  else
+    echo "gitea: unhealthy"
+  fi
+  echo "=== tor ==="
+  if eog_compose exec -T tor tor --version >/dev/null 2>&1; then
+    echo "tor container: running"
+  else
+    echo "tor container: not responding"
+  fi
+  if onion="$(eog_read_onion_host 2>/dev/null || true)"; then
+    if [[ -n ${onion} ]]; then
+      echo "onion hostname: present"
+    fi
+  fi
+}
+
+cmd_doctor() {
+  eog_require_root
+  eog_load_config_env
+  local failed=0
+  check() {
+    local name="$1"
+    shift
+    if "$@"; then
+      printf 'OK  %s\n' "${name}"
+    else
+      printf 'FAIL %s\n' "${name}"
+      failed=1
+    fi
+  }
+
+  check "install root exists" test -d "${EOG_INSTALL_ROOT}"
+  local mode owner
+  mode="$(stat -c '%a' "${EOG_INSTALL_ROOT}/config.env")"
+  check "config.env mode 640/600" bash -c "[[ ${mode} == 640 || ${mode} == 600 ]]"
+  mode="$(stat -c '%a' "${EOG_INSTALL_ROOT}/secrets")"
+  check "secrets dir mode 750/700" bash -c "[[ ${mode} == 750 || ${mode} == 700 ]]"
+  owner="$(stat -c '%U:%G' "${EOG_INSTALL_ROOT}/secrets")"
+  check "secrets dir owner root:gid" bash -c "[[ ${owner} == root:* ]]"
+  check "secret_key present" test -f "${EOG_INSTALL_ROOT}/secrets/secret_key"
+  mode="$(stat -c '%a' "${EOG_INSTALL_ROOT}/secrets/secret_key")"
+  check "secret_key mode 640" bash -c "[[ ${mode} == 640 ]]"
+  owner="$(stat -c '%U:%G' "${EOG_INSTALL_ROOT}/secrets/secret_key")"
+  check "secret_key owner root:${EOG_GITEA_GID}" bash -c "[[ ${owner} == root:${EOG_GITEA_GID} ]]"
+  check "onion hostname present" test -s "$(eog_onion_hostname_file)"
+  mode="$(stat -c '%a' "${EOG_INSTALL_ROOT}/data/tor/hidden_service")"
+  check "hidden_service dir mode 700" bash -c "[[ ${mode} == 700 ]]"
+  check "localhost bind only" bash -c "ss -ltn | grep -E ':${HTTP_PORT}\\b' | grep -q '127.0.0.1:${HTTP_PORT}'"
+  if ss -ltn 2>/dev/null | grep -E '9050' | grep -qE '0\\.0\\.0\\.0|\\*:9050|[[:space:]]:::9050'; then
+    printf 'FAIL %s\n' "tor socks not published on host"
+    failed=1
+  else
+    printf 'OK  %s\n' "tor socks not published on host"
+  fi
+  check "gitea healthz" curl -fsS --max-time 5 "http://127.0.0.1:${HTTP_PORT}/api/healthz" >/dev/null
+
+  # Gitea process user can read mounted secrets.
+  if eog_compose exec -T -u git gitea sh -c 'test -r /run/eog-secrets/secret_key && test -r /run/eog-secrets/internal_token && test -r /run/eog-secrets/jwt_secret'; then
+    printf 'OK  %s\n' "gitea uid can read __FILE secrets"
+  else
+    printf 'FAIL %s\n' "gitea uid can read __FILE secrets"
+    failed=1
+  fi
+
+  # Tor service DNS on the internal network.
+  if eog_compose exec -T gitea /bin/sh -c 'getent hosts tor >/dev/null 2>&1 || nslookup tor >/dev/null 2>&1'; then
+    printf 'OK  %s\n' "gitea resolves tor on internal DNS"
+  else
+    printf 'FAIL %s\n' "gitea resolves tor on internal DNS"
+    failed=1
+  fi
+
+  # Tor SOCKS reachable when a connect tool exists in the image.
+  socks_rc=0
+  eog_compose exec -T gitea /bin/sh -c '
+    if command -v nc >/dev/null 2>&1; then
+      nc -z -w 3 tor 9050
+    elif command -v busybox >/dev/null 2>&1 && busybox nc 2>&1 | grep -q -- "-z"; then
+      busybox nc -z -w 3 tor 9050
+    else
+      exit 0
+    fi
+  ' || socks_rc=$?
+  if [[ ${socks_rc} -eq 0 ]]; then
+    printf 'OK  %s\n' "tor socks reachable from gitea (or nc unavailable)"
+  else
+    printf 'FAIL %s\n' "tor socks reachable from gitea"
+    failed=1
+  fi
+
+  # Direct clearnet from Gitea must fail with proxies cleared (network isolation).
+  if eog_compose exec -T gitea /bin/sh -c '
+    unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+    if command -v wget >/dev/null 2>&1; then
+      wget -q -T 3 -O /dev/null http://1.1.1.1 && exit 0
+    fi
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsS --max-time 3 http://1.1.1.1 >/dev/null && exit 0
+    fi
+    if command -v nc >/dev/null 2>&1; then
+      nc -z -w 3 1.1.1.1 443 && exit 0
+    fi
+    exit 1
+  '; then
+    printf 'FAIL %s\n' "gitea direct clearnet egress blocked"
+    failed=1
+  else
+    printf 'OK  %s\n' "gitea direct clearnet egress blocked"
+  fi
+
+  # Docker DNS may resolve names, but without Tor there must be no useful clearnet path.
+  # Prefer proving TCP to a resolved public IP fails (already covered) and that SOCKS is required.
+  check "disk space > 1GiB" bash -c "mb=\$(df -Pm '${EOG_INSTALL_ROOT}' | awk 'NR==2{print \$4}'); (( mb > 1024 ))"
+  if eog_compose config 2>/dev/null | grep -q docker.sock; then
+    printf 'FAIL %s\n' "no docker.sock mount"
+    failed=1
+  else
+    printf 'OK  %s\n' "no docker.sock mount"
+  fi
+  check "app.ini ROOT_URL uses onion" grep -Eq '^ROOT_URL = http://.+\.onion/' "${EOG_INSTALL_ROOT}/config/app.ini"
+  check "SECRET_KEY_URI uses secrets mount" grep -Eq '^SECRET_KEY_URI = file:/run/eog-secrets/secret_key' "${EOG_INSTALL_ROOT}/config/app.ini"
+  check "ALLOWED_DOMAINS not star" bash -c "! grep -Eq '^ALLOWED_DOMAINS = \\*$' '${EOG_INSTALL_ROOT}/config/app.ini'"
+
+  if [[ ${failed} -ne 0 ]]; then
+    eog_die "doctor found problems"
+  fi
+  eog_info "doctor: all checks passed"
+}
+
+cmd_backup() {
+  eog_require_root
+  eog_load_config_env
+  local ts archive work manifest
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p "${EOG_BACKUP_DIR}"
+  chmod 700 "${EOG_BACKUP_DIR}"
+  work="$(mktemp -d /tmp/eog-backup.XXXXXX)"
+  trap 'rm -rf "${work}"' RETURN
+  archive="${EOG_BACKUP_DIR}/easy-onion-gitea-${ts}.tar.gz"
+
+  eog_info "Stopping service for consistent SQLite snapshot..."
+  eog_service_stop
+  eog_compose down >/dev/null 2>&1 || true
+
+  mkdir -p "${work}/backup"
+  cp -a "${EOG_INSTALL_ROOT}/VERSION" "${work}/backup/" 2>/dev/null || true
+  cp -a "${EOG_INSTALL_ROOT}/images.lock" "${work}/backup/"
+  cp -a "${EOG_INSTALL_ROOT}/config.env" "${work}/backup/"
+  cp -a "${EOG_INSTALL_ROOT}/compose.yml" "${work}/backup/"
+  cp -a "${EOG_INSTALL_ROOT}/Dockerfile.tor" "${work}/backup/" 2>/dev/null || true
+  cp -a "${EOG_INSTALL_ROOT}/config" "${work}/backup/"
+  cp -a "${EOG_INSTALL_ROOT}/secrets" "${work}/backup/"
+  cp -a "${EOG_INSTALL_ROOT}/data" "${work}/backup/"
+  cp -a "${EOG_INSTALL_ROOT}/state" "${work}/backup/" 2>/dev/null || mkdir -p "${work}/backup/state"
+  mkdir -p "${work}/backup/bin" "${work}/backup/scripts" "${work}/backup/systemd"
+  cp -a "${EOG_INSTALL_ROOT}/bin/eog-admin" "${work}/backup/bin/" 2>/dev/null || true
+  cp -a /usr/local/sbin/eog-admin "${work}/backup/bin/eog-admin" 2>/dev/null || true
+  cp -a "${EOG_INSTALL_ROOT}/scripts/." "${work}/backup/scripts/" 2>/dev/null || true
+  cp -a /etc/systemd/system/easy-onion-gitea.service "${work}/backup/systemd/" 2>/dev/null || true
+
+  onion="$(eog_read_onion_host || echo unknown)"
+  manifest="${work}/backup/MANIFEST"
+  cat >"${manifest}" <<EOF
+format=easy-onion-gitea-backup-v1
+created_utc=${ts}
+project_version=$(cat "${EOG_INSTALL_ROOT}/VERSION" 2>/dev/null || echo unknown)
+onion_host=${onion}
+http_port=${HTTP_PORT}
+admin_user=${ADMIN_USER}
+EOF
+
+  (
+    cd "${work}"
+    # Exclude SHA256SUMS itself from the hashed set.
+    find backup -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum >backup/SHA256SUMS
+    tar -czf "${archive}" backup
+  )
+  chmod 600 "${archive}"
+  eog_info "Backup written: ${archive}"
+
+  eog_info "Restarting service..."
+  systemctl start "${EOG_SERVICE_NAME}" || eog_compose up -d --remove-orphans
+  if ! eog_wait_for_gitea "${HTTP_PORT}" 180; then
+    eog_die "service failed to become healthy after backup"
+  fi
+}
+
+cmd_restore() {
+  eog_require_root
+  local archive="${1:-}"
+  [[ -n ${archive} ]] || eog_die "usage: eog-admin restore PATH"
+  [[ -f ${archive} ]] || eog_die "backup not found: ${archive}"
+
+  eog_load_config_env
+  local work
+  work="$(mktemp -d /tmp/eog-restore.XXXXXX)"
+  trap 'rm -rf "${work}"' RETURN
+  tar -tzf "${archive}" | grep -q '^backup/MANIFEST$' || eog_die "archive missing backup/MANIFEST"
+  tar -xzf "${archive}" -C "${work}"
+  [[ -f "${work}/backup/MANIFEST" ]] || eog_die "invalid archive layout"
+  [[ -f "${work}/backup/SHA256SUMS" ]] || eog_die "archive missing SHA256SUMS"
+  (
+    cd "${work}"
+    sha256sum -c backup/SHA256SUMS >/dev/null
+  ) || eog_die "checksum verification failed"
+
+  expected_onion="$(awk -F= '/^onion_host=/{print $2}' "${work}/backup/MANIFEST")"
+  printf 'Restore will replace data under %s\n' "${EOG_INSTALL_ROOT}"
+  printf 'Expected onion host after restore: %s\n' "${expected_onion}"
+  printf 'Type YES to continue: '
+  read -r confirm
+  [[ ${confirm} == "YES" ]] || eog_die "restore cancelled"
+
+  eog_info "Creating pre-restore safety backup..."
+  cmd_backup
+
+  eog_service_stop
+  eog_compose down >/dev/null 2>&1 || true
+
+  rm -rf "${EOG_INSTALL_ROOT}/config" "${EOG_INSTALL_ROOT}/secrets" "${EOG_INSTALL_ROOT}/data" "${EOG_INSTALL_ROOT}/state"
+  cp -a "${work}/backup/config" "${EOG_INSTALL_ROOT}/"
+  cp -a "${work}/backup/secrets" "${EOG_INSTALL_ROOT}/"
+  cp -a "${work}/backup/data" "${EOG_INSTALL_ROOT}/"
+  cp -a "${work}/backup/state" "${EOG_INSTALL_ROOT}/" 2>/dev/null || mkdir -p "${EOG_INSTALL_ROOT}/state"
+  cp -a "${work}/backup/config.env" "${EOG_INSTALL_ROOT}/config.env"
+  cp -a "${work}/backup/compose.yml" "${EOG_INSTALL_ROOT}/compose.yml" 2>/dev/null || true
+  cp -a "${work}/backup/Dockerfile.tor" "${EOG_INSTALL_ROOT}/Dockerfile.tor" 2>/dev/null || true
+  cp -a "${work}/backup/images.lock" "${EOG_INSTALL_ROOT}/images.lock" 2>/dev/null || true
+  cp -a "${work}/backup/VERSION" "${EOG_INSTALL_ROOT}/VERSION" 2>/dev/null || true
+  if [[ -d "${work}/backup/scripts" ]]; then
+    mkdir -p "${EOG_INSTALL_ROOT}/scripts"
+    cp -a "${work}/backup/scripts/." "${EOG_INSTALL_ROOT}/scripts/"
+  fi
+  if [[ -f "${work}/backup/bin/eog-admin" ]]; then
+    install -m 0755 "${work}/backup/bin/eog-admin" /usr/local/sbin/eog-admin
+    mkdir -p "${EOG_INSTALL_ROOT}/bin"
+    install -m 0755 "${work}/backup/bin/eog-admin" "${EOG_INSTALL_ROOT}/bin/eog-admin"
+  fi
+  if [[ -f "${work}/backup/systemd/easy-onion-gitea.service" ]]; then
+    install -m 0644 "${work}/backup/systemd/easy-onion-gitea.service" /etc/systemd/system/easy-onion-gitea.service
+    systemctl daemon-reload
+  fi
+
+  eog_load_config_env
+  if [[ -f "${EOG_INSTALL_ROOT}/state/tor_uid" ]]; then
+    EOG_TOR_UID="$(tr -d '[:space:]' <"${EOG_INSTALL_ROOT}/state/tor_uid")"
+  fi
+  if [[ -f "${EOG_INSTALL_ROOT}/state/tor_gid" ]]; then
+    EOG_TOR_GID="$(tr -d '[:space:]' <"${EOG_INSTALL_ROOT}/state/tor_gid")"
+  fi
+  chown -R "${EOG_TOR_UID}:${EOG_TOR_GID}" "${EOG_INSTALL_ROOT}/data/tor"
+  chown -R "${EOG_GITEA_UID}:${EOG_GITEA_GID}" "${EOG_INSTALL_ROOT}/data/gitea"
+  chmod 700 "${EOG_INSTALL_ROOT}/data/tor" "${EOG_INSTALL_ROOT}/data/tor/hidden_service"
+  chown root:"${EOG_GITEA_GID}" "${EOG_INSTALL_ROOT}/secrets"
+  chmod 750 "${EOG_INSTALL_ROOT}/secrets"
+  local key
+  for key in secret_key internal_token jwt_secret; do
+    if [[ -f "${EOG_INSTALL_ROOT}/secrets/${key}" ]]; then
+      chown "root:${EOG_GITEA_GID}" "${EOG_INSTALL_ROOT}/secrets/${key}"
+      chmod 0640 "${EOG_INSTALL_ROOT}/secrets/${key}"
+    fi
+  done
+  eog_sync_app_ini_to_runtime
+
+  # Rebuild Tor image if Dockerfile is present so pruned hosts can recover.
+  if [[ -f "${EOG_INSTALL_ROOT}/Dockerfile.tor" ]]; then
+    eog_compose build tor || true
+    eog_record_tor_identity || true
+  fi
+
+  systemctl start "${EOG_SERVICE_NAME}" || eog_compose up -d --remove-orphans
+  if ! eog_wait_for_gitea "${HTTP_PORT}" 180; then
+    eog_die "Gitea unhealthy after restore"
+  fi
+  actual="$(eog_read_onion_host || true)"
+  if [[ -n ${expected_onion} && ${expected_onion} != "unknown" && ${actual} != "${expected_onion}" ]]; then
+    eog_die "onion identity mismatch after restore (expected ${expected_onion}, got ${actual})"
+  fi
+  eog_mark_install_complete
+  eog_info "Restore complete. Onion: http://${actual}/"
+}
+
+cmd_update() {
+  eog_require_root
+  local release_dir="${1:-}"
+  eog_load_config_env
+  if [[ -z ${release_dir} ]]; then
+    eog_info "Installed version: $(cat "${EOG_INSTALL_ROOT}/VERSION" 2>/dev/null || echo unknown)"
+    eog_info "To update, unpack a newer easy-onion-gitea release and run:"
+    eog_info "  sudo eog-admin update /path/to/new-release"
+    eog_info "v0.1 does not auto-discover remote releases."
+    return 0
+  fi
+  [[ -d ${release_dir} ]] || eog_die "release directory not found: ${release_dir}"
+  [[ -f "${release_dir}/VERSION" && -f "${release_dir}/images.lock" && -f "${release_dir}/compose.yml" ]] ||
+    eog_die "release directory missing VERSION, images.lock, or compose.yml"
+
+  local old_onion
+  old_onion="$(eog_read_onion_host || true)"
+  eog_info "Creating pre-update backup..."
+  cmd_backup
+
+  eog_load_images_lock "${release_dir}/images.lock"
+  eog_refresh_static_files "${release_dir}"
+
+  TOR_IMAGE="${TOR_IMAGE_NAME}:${TOR_IMAGE_TAG}"
+  local http_port admin_user require_2fa
+  http_port="${HTTP_PORT}"
+  admin_user="${ADMIN_USER}"
+  require_2fa="${REQUIRE_2FA:-false}"
+  cat >"${EOG_INSTALL_ROOT}/config.env" <<EOF
+COMPOSE_PROJECT_NAME=${EOG_COMPOSE_PROJECT}
+INSTALL_ROOT=${EOG_INSTALL_ROOT}
+HTTP_PORT=${http_port}
+ADMIN_USER=${admin_user}
+REQUIRE_2FA=${require_2fa}
+GITEA_IMAGE=${GITEA_IMAGE}
+TOR_IMAGE=${TOR_IMAGE}
+DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}
+TOR_APT_SUITE=${TOR_APT_SUITE}
+TOR_PACKAGE_VERSION=${TOR_PACKAGE_VERSION}
+EOF
+  chmod 0640 "${EOG_INSTALL_ROOT}/config.env"
+  eog_load_config_env
+
+  # Preserve operator app.ini (ALLOWED_DOMAINS etc). Only refresh onion URL fields.
+  if onion="$(eog_read_onion_host)"; then
+    if [[ -f "${EOG_INSTALL_ROOT}/config/app.ini" ]]; then
+      eog_info "Preserving config/app.ini; updating DOMAIN/ROOT_URL only"
+      eog_update_app_ini_onion "${onion}"
+    else
+      eog_render_app_ini "${onion}" "${require_2fa}" "${EOG_INSTALL_ROOT}/config/app.ini.tmpl"
+    fi
+  fi
+
+  docker pull "${GITEA_IMAGE}"
+  eog_compose build tor
+  eog_record_tor_identity
+  eog_compose up -d --remove-orphans
+  systemctl start "${EOG_SERVICE_NAME}" || true
+
+  if ! eog_wait_for_gitea "${HTTP_PORT}" 180; then
+    eog_die "update failed health check; restore the pre-update backup"
+  fi
+  new_onion="$(eog_read_onion_host || true)"
+  if [[ -n ${old_onion} && ${new_onion} != "${old_onion}" ]]; then
+    eog_die "onion hostname changed during update (${old_onion} -> ${new_onion}); investigate and restore if needed"
+  fi
+  /usr/local/sbin/eog-admin doctor || eog_die "doctor failed after update"
+  eog_mark_install_complete
+  eog_info "Update complete to version $(cat "${EOG_INSTALL_ROOT}/VERSION")"
+}
+
+cmd_onion() {
+  eog_require_root
+  eog_load_config_env
+  local hs="${EOG_INSTALL_ROOT}/data/tor/hidden_service"
+  [[ -d ${hs} ]] || eog_die "hidden service directory missing"
+  local mode
+  mode="$(stat -c '%a' "${hs}")"
+  [[ ${mode} == "700" ]] || eog_die "hidden_service mode is ${mode}, expected 700"
+  [[ -f "${hs}/hostname" ]] || eog_die "hostname file missing"
+  [[ -f "${hs}/hs_ed25519_secret_key" || -f "${hs}/private_key" ]] || eog_die "hidden service key material missing"
+  local host
+  host="$(eog_read_onion_host)"
+  printf 'onion_host=%s\n' "${host}"
+  printf 'onion_url=http://%s/\n' "${host}"
+  printf 'keys=present (not printed)\n'
+}
+
+cmd_reset_admin_password() {
+  eog_require_root
+  eog_load_config_env
+  local user="${ADMIN_USER}"
+  if [[ -f "${EOG_INSTALL_ROOT}/state/admin_user" ]]; then
+    user="$(tr -d '[:space:]' <"${EOG_INSTALL_ROOT}/state/admin_user")"
+  fi
+  local pass
+  pass="$(eog_generate_password)"
+  eog_gitea_exec admin user change-password --login "${user}" --password "${pass}"
+  eog_info "Password reset for ${user}."
+  eog_info "Store the new password securely. creds.txt was not modified."
+  eog_info "New password: ${pass}"
+}
+
+cmd_apply_config() {
+  eog_require_root
+  eog_load_config_env
+  [[ -f "${EOG_INSTALL_ROOT}/config/app.ini" ]] || eog_die "missing config/app.ini"
+  eog_info "Syncing config/app.ini into the Gitea data volume and restarting..."
+  eog_sync_app_ini_to_runtime
+  systemctl restart "${EOG_SERVICE_NAME}" || eog_compose up -d --remove-orphans
+  if ! eog_wait_for_gitea "${HTTP_PORT}" 180; then
+    eog_die "Gitea unhealthy after apply-config"
+  fi
+  eog_info "Configuration applied."
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+  case "${cmd}" in
+    status) cmd_status "$@" ;;
+    doctor) cmd_doctor "$@" ;;
+    backup) cmd_backup "$@" ;;
+    restore) cmd_restore "$@" ;;
+    update) cmd_update "$@" ;;
+    onion) cmd_onion "$@" ;;
+    reset-admin-password) cmd_reset_admin_password "$@" ;;
+    apply-config) cmd_apply_config "$@" ;;
+    "" | -h | --help) usage ;;
+    *)
+      usage
+      eog_die "unknown command: ${cmd}"
+      ;;
+  esac
+}
+
+main "$@"

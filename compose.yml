@@ -1,0 +1,68 @@
+name: easy-onion-gitea
+
+services:
+  tor:
+    image: ${TOR_IMAGE:-easy-onion-gitea-tor:0.1.0}
+    build:
+      context: .
+      dockerfile: Dockerfile.tor
+      args:
+        DEBIAN_BASE_IMAGE: ${DEBIAN_BASE_IMAGE:-debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241}
+        TOR_APT_SUITE: ${TOR_APT_SUITE:-bookworm}
+        TOR_PACKAGE_VERSION: ${TOR_PACKAGE_VERSION:-0.4.9.11-1~d12.bookworm+1}
+    restart: unless-stopped
+    volumes:
+      - ${INSTALL_ROOT:-.}/data/tor:/var/lib/tor
+      - ${INSTALL_ROOT:-.}/config/torrc:/etc/tor/torrc:ro
+    networks:
+      - internal
+      - egress
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  gitea:
+    image: ${GITEA_IMAGE:-gitea/gitea:1.27.1@sha256:34e3f6b75f5cbb6aebce588037fc5a53c84213e4d4b00da0a8d73e031a558e52}
+    restart: unless-stopped
+    depends_on:
+      - tor
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      # Keep proxy for application egress. Doctor clears these when testing direct block.
+      HTTP_PROXY: socks5h://tor:9050
+      HTTPS_PROXY: socks5h://tor:9050
+      ALL_PROXY: socks5h://tor:9050
+      NO_PROXY: gitea,localhost,127.0.0.1,tor
+      http_proxy: socks5h://tor:9050
+      https_proxy: socks5h://tor:9050
+      all_proxy: socks5h://tor:9050
+      no_proxy: gitea,localhost,127.0.0.1,tor
+    volumes:
+      # app.ini lives inside this volume (writable). Canonical operator copy is config/app.ini.
+      - ${INSTALL_ROOT:-.}/data/gitea:/data
+      - ${INSTALL_ROOT:-.}/secrets:/run/eog-secrets:ro
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-3000}:3000"
+    networks:
+      - internal
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    # Do not cap_drop ALL: the official rootful image entrypoint needs chown/setuid.
+
+networks:
+  internal:
+    internal: true
+  egress:
+    driver: bridge

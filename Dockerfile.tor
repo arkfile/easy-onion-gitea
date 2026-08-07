@@ -1,0 +1,41 @@
+# Project-owned Tor image for easy-onion-gitea.
+# Base and Tor package versions are pinned via images.lock / build-args.
+ARG DEBIAN_BASE_IMAGE=debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
+FROM ${DEBIAN_BASE_IMAGE}
+
+ARG TOR_APT_SUITE=bookworm
+ARG TOR_PACKAGE_VERSION=0.4.9.11-1~d12.bookworm+1
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    gnupg \
+    apt-transport-https \
+  && mkdir -p /usr/share/keyrings \
+  && curl -fsSL https://deb.torproject.org/torproject.org/A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89.asc \
+    | gpg --dearmor -o /usr/share/keyrings/deb.torproject.org-keyring.gpg \
+  && printf 'deb [signed-by=/usr/share/keyrings/deb.torproject.org-keyring.gpg] https://deb.torproject.org/torproject.org %s main\n' "${TOR_APT_SUITE}" \
+    > /etc/apt/sources.list.d/tor.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends \
+    "tor=${TOR_PACKAGE_VERSION}" \
+    deb.torproject.org-keyring \
+  && apt-get purge -y curl gnupg apt-transport-https \
+  && apt-get autoremove -y \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /var/lib/tor/hidden_service /etc/tor \
+  && chown -R debian-tor:debian-tor /var/lib/tor \
+  && chmod 700 /var/lib/tor /var/lib/tor/hidden_service
+
+COPY config/torrc /etc/tor/torrc
+
+USER debian-tor
+WORKDIR /var/lib/tor
+
+EXPOSE 9050
+
+CMD ["tor", "-f", "/etc/tor/torrc"]

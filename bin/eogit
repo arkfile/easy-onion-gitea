@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+EOGIT_TOR_PROXY="${EOGIT_TOR_PROXY:-}"
+EOGIT_CONFIG="${EOGIT_CONFIG:-${HOME}/.config/eogit/config}"
+
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+load_config() {
+  if [[ -f ${EOGIT_CONFIG} ]]; then
+    # shellcheck disable=SC1090
+    source "${EOGIT_CONFIG}"
+  fi
+}
+
+resolve_proxy() {
+  if [[ -n ${EOGIT_TOR_PROXY} ]]; then
+    printf '%s\n' "${EOGIT_TOR_PROXY}"
+    return
+  fi
+  if [[ -n ${EOGIT_TOR_PROXY_FROM_CONFIG:-} ]]; then
+    printf '%s\n' "${EOGIT_TOR_PROXY_FROM_CONFIG}"
+    return
+  fi
+  printf '%s\n' "socks5h://127.0.0.1:9050"
+}
+
+doctor() {
+  load_config
+  local proxy
+  proxy="$(resolve_proxy)"
+  command -v git >/dev/null 2>&1 || die "git not found"
+  printf 'OK  git: %s\n' "$(git --version)"
+  local host port
+  host="$(printf '%s' "${proxy}" | sed -E 's#^[a-z0-9]+://([^:/]+).*#\1#')"
+  port="$(printf '%s' "${proxy}" | sed -E 's#^[a-z0-9]+://[^:/]+:([0-9]+).*#\1#')"
+  if command -v ss >/dev/null 2>&1; then
+    if ss -ltn | grep -qE "${host}:${port}|0.0.0.0:${port}|\\[::\\]:${port}|\\*:${port}"; then
+      printf 'OK  SOCKS listener suspected at %s:%s\n' "${host}" "${port}"
+    else
+      printf 'WARN SOCKS listener not detected at %s:%s\n' "${host}" "${port}"
+    fi
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    if curl -fsS --max-time 30 --proxy "${proxy}" https://check.torproject.org/api/ip >/dev/null 2>&1; then
+      printf 'OK  Tor proxy fetch via %s\n' "${proxy}"
+    else
+      die "Tor connectivity check failed via ${proxy}"
+    fi
+  fi
+  printf 'OK  GIT_ALLOW_PROTOCOL will be http:https\n'
+  printf 'OK  proxy=%s\n' "${proxy}"
+}
+
+run_git() {
+  load_config
+  local proxy
+  proxy="$(resolve_proxy)"
+  export ALL_PROXY="${proxy}"
+  export HTTPS_PROXY="${proxy}"
+  export HTTP_PROXY="${proxy}"
+  export all_proxy="${proxy}"
+  export https_proxy="${proxy}"
+  export http_proxy="${proxy}"
+  export GIT_ALLOW_PROTOCOL="http:https"
+  export GIT_CONFIG_COUNT=4
+  export GIT_CONFIG_KEY_0="http.proxy"
+  export GIT_CONFIG_VALUE_0="${proxy}"
+  export GIT_CONFIG_KEY_1="https.proxy"
+  export GIT_CONFIG_VALUE_1="${proxy}"
+  # Rewrite common SSH/git submodule URLs to HTTPS
+  export GIT_CONFIG_KEY_2="url.https://github.com/.insteadof"
+  export GIT_CONFIG_VALUE_2="git@github.com:"
+  export GIT_CONFIG_KEY_3="url.https://.insteadof"
+  export GIT_CONFIG_VALUE_3="git://"
+  exec git "$@"
+}
+
+main() {
+  local cmd="${1:-}"
+  case "${cmd}" in
+    doctor)
+      doctor
+      ;;
+    -h | --help)
+      cat <<'EOF'
+Usage: eogit <git-args...>
+       eogit doctor
+
+Runs git with a per-process Tor SOCKS proxy (default socks5h://127.0.0.1:9050).
+Override with EOGIT_TOR_PROXY or ~/.config/eogit/config (EOGIT_TOR_PROXY_FROM_CONFIG=...).
+EOF
+      ;;
+    *)
+      run_git "$@"
+      ;;
+  esac
+}
+
+main "$@"

@@ -149,11 +149,11 @@ Gitea migration and mirror URL checks use `[migrations]` settings. Current Gitea
 
 - An empty `ALLOWED_DOMAINS` value does **not** mean deny-all. Empty means allow public "external" hosts via Gitea's builtin external matcher.
 - `.onion` hostnames typically do not resolve to public IPs through normal DNS, so they fail that empty/external default. Onion remotes require an explicit pattern such as `*.onion`.
-- When `ALLOWED_DOMAINS` is non-empty, only matching hostname patterns are allowed (comma-separated; wildcards supported). That replaces the builtin external allowlist.
+- When `ALLOWED_DOMAINS` is non-empty, only matching hostname patterns are allowed (comma-separated; wildcards supported). That replaces the builtin external whitelist.
 - `ALLOW_LOCALNETWORKS` is the correct key name (not `ALLOW_LOCAL_NETWORKS`). When false, private and loopback destinations are blocked at the application SSRF layer. Current Gitea dial logic still permits connecting to the configured proxy host and port, so Tor SOCKS at `tor:9050` does not require `ALLOW_LOCALNETWORKS = true`.
 - `BLOCKED_DOMAINS` denies matching hosts. `SKIP_TLS_VERIFY` must remain false.
 
-Therefore v0.1 defaults to `ALLOWED_DOMAINS = *.onion` and `ALLOW_LOCALNETWORKS = false`. Do not ship an empty allowlist and do not ship `*`. Operators who need clearnet mirrors edit `config/app.ini` (then recreate/restart via `eog-admin`) to append approved domains, for example `*.onion,github.com,codeberg.org`. Document that changing this file is an administrative action and that `*` would allow all external hosts. Acceptance tests must cover onion pull/push mirrors with the default allowlist and a clearnet mirror after an explicit domain is added. Confirm `*.onion` matching against the pinned Gitea release during the first integration spike.
+Therefore v0.1 defaults to `ALLOWED_DOMAINS = *.onion` and `ALLOW_LOCALNETWORKS = false`. Do not ship an empty whitelist and do not ship `*`. Operators who need clearnet mirrors edit `config/app.ini` (then recreate/restart via `eog-admin`) to append approved domains, for example `*.onion,github.com,codeberg.org`. Document that changing this file is an administrative action and that `*` would allow all external hosts. Acceptance tests must cover onion pull/push mirrors with the default whitelist and a clearnet mirror after an explicit domain is added. Confirm `*.onion` matching against the pinned Gitea release during the first integration spike.
 
 The bootstrap administrator username defaults to `gitea-admin`. Optional installer flag `--admin-user NAME` may override it on first bootstrap only. Store the chosen username in `creds.txt` and install state. Re-install never renames the account. This account is bootstrap material, not a shared daily team login. Administrators create individual users, organizations, and teams. Team members receive only the permissions they need.
 
@@ -383,7 +383,7 @@ Container tests must verify pinned images, the recorded Gitea process uid can re
 - [ ] Localhost-only HTTP with configurable host port
 - [ ] Tor-first bootstrap with canonical onion `ROOT_URL` and fixed internal URL
 - [ ] Private-team Gitea defaults and individual-account workflow
-- [ ] Migration allowlist default `*.onion`, Tor proxy settings, clearnet domains opt-in
+- [ ] Migration whitelist default `*.onion`, Tor proxy settings, clearnet domains opt-in
 - [ ] Bootstrap admin `gitea-admin` with optional `--admin-user`
 - [ ] Idempotent sudo installer and systemd unit
 - [ ] Host-root managed Gitea secret files using `__FILE`, readable by the app uid
@@ -401,8 +401,6 @@ Container tests must verify pinned images, the recorded Gitea process uid can re
 
 Possible later work includes non-root Gitea, optional Tor v3 client authorization, Podman support, RHEL-family support, SSH-over-onion, encrypted off-host backup automation, air-gap mirror chaining, richer team provisioning, additional client platforms, and replacement of complex Bash administration code with a static Go binary if complexity justifies it.
 
-## Remaining implementation decisions
+## Other implementation decisions
 
-These items are still open but no longer block the overall architecture:
-
-Select and pin the initial Debian base, Tor package, and Gitea release versions that populate `images.lock`. Spike the pinned Gitea image for the application process uid/gid and lock secret file ownership to match. Confirm against that Gitea release that `*.onion` allowlisting permits onion migrate/mirror URLs, that Tor SOCKS dial works with `ALLOW_LOCALNETWORKS = false`, and that proxy remote DNS (`socks5h`) is accepted by Gitea's proxy URL parser. Prove the locked two-network Compose design in acceptance tests, including that Docker DNS may resolve `tor` while application egress hostnames fail closed when Tor is down. Finalize backup archive format (tar structure, compression, manifest fields) and operator-facing encryption guidance; v0.1 backups are root-readable local archives and encryption for off-host copy remains operator-side unless a later feature adds it. Select the public vulnerability reporting route before the first public release.
+v0.1.0 pins are recorded in `images.lock`: Gitea `1.27.1`, Debian `bookworm-slim`, and Tor Project package `0.4.9.11-1~d12.bookworm+1`. Secret files are owned `root:<gitea-gid>` mode `640`. Install uses `state/install_complete` so interrupted installs can resume. Updates preserve operator `app.ini`. Backup format is `easy-onion-gitea-backup-v1` (tar.gz with `MANIFEST` and `SHA256SUMS` excluding the checksum file from its own hash). Still verify on a live host: container startup, `SECRET_KEY_URI`, `*.onion` migrate allowlisting, Tor SOCKS with `ALLOW_LOCALNETWORKS = false`, `socks5h` proxy URL acceptance, and full acceptance tests in `tests/acceptance.md`. Select the public vulnerability reporting route before the first public release.
