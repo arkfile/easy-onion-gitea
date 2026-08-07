@@ -36,14 +36,15 @@ services:
       USER_UID: "1000"
       USER_GID: "1000"
       # Keep proxy for application egress. Doctor clears these when testing direct block.
+      # Use Tor service DNS name for SOCKS; HiddenServicePort below uses Gitea's static IP.
       HTTP_PROXY: socks5h://tor:9050
       HTTPS_PROXY: socks5h://tor:9050
       ALL_PROXY: socks5h://tor:9050
-      NO_PROXY: gitea,localhost,127.0.0.1,tor
+      NO_PROXY: gitea,localhost,127.0.0.1,tor,172.30.0.0/24
       http_proxy: socks5h://tor:9050
       https_proxy: socks5h://tor:9050
       all_proxy: socks5h://tor:9050
-      no_proxy: gitea,localhost,127.0.0.1,tor
+      no_proxy: gitea,localhost,127.0.0.1,tor,172.30.0.0/24
     volumes:
       # app.ini lives inside this volume (writable). Canonical operator copy is config/app.ini.
       - ${INSTALL_ROOT:-.}/data/gitea:/data
@@ -51,7 +52,8 @@ services:
     ports:
       - "127.0.0.1:${HTTP_PORT:-3000}:3000"
     networks:
-      - internal
+      internal:
+        ipv4_address: 172.30.0.10
     logging:
       driver: json-file
       options:
@@ -64,5 +66,10 @@ services:
 networks:
   internal:
     internal: true
+    ipam:
+      config:
+        # Fixed subnet so torrc HiddenServicePort can target Gitea by IP.
+        # Tor does not accept Docker DNS names in HiddenServicePort.
+        - subnet: 172.30.0.0/24
   egress:
     driver: bridge

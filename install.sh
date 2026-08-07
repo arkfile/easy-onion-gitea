@@ -174,8 +174,10 @@ eog_compose build tor
 eog_record_tor_identity
 eog_ensure_dirs
 
-# Bootstrap: start Tor first for onion hostname, then write app.ini, then full stack
+# Bootstrap: start Tor first for onion hostname, then write app.ini, then full stack.
+# Tear down first so Compose recreates networks when IPAM/subnet pins change.
 eog_info "Starting Tor to obtain onion hostname..."
+eog_compose down >/dev/null 2>&1 || true
 eog_compose up -d --remove-orphans tor
 if ! eog_wait_for_file "$(eog_onion_hostname_file)" 180; then
   eog_die "onion hostname timeout; check: docker compose --project-directory ${EOG_INSTALL_ROOT} logs tor"

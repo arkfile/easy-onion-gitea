@@ -8,7 +8,8 @@ SocksPort 0.0.0.0:9050 IsolateDestAddr IsolateDestPort
 
 HiddenServiceDir /var/lib/tor/hidden_service
 HiddenServiceVersion 3
-HiddenServicePort 80 gitea:3000
+# Tor requires an IP here (not a Docker DNS name). Matches compose gitea ipv4_address.
+HiddenServicePort 80 172.30.0.10:3000
 
 Log notice stdout
 RunAsDaemon 0
