@@ -56,14 +56,16 @@ Gitea connects only to an internal application network. Tor connects to that net
 
 Use two Compose networks:
 
-- `internal`: Gitea and Tor both attach here. Gitea has no other network attachment. This network has no default route to the internet.
+- `internal`: Gitea and Tor both attach here. Mark this network `internal: true` so it has no route to the public internet. Gitea has no other network attachment.
 - `egress`: Tor attaches here so it can reach the public internet. Gitea must never attach to this network.
 
-Gitea reaches the internet only by talking to Tor on `internal`. Tor exposes its SOCKS endpoint on `internal` at a fixed service name and port (for example `tor:9050`). Gitea must not receive Docker embedded DNS, host DNS, or a public resolver. If Gitea needs name resolution for outbound application work, that resolution must occur through Tor remote hostname resolution via the SOCKS proxy, not through a separate DNS path.
+Gitea reaches the internet only by talking to Tor on `internal`. Tor exposes its SOCKS endpoint on `internal` at a fixed service name and port (for example `tor:9050`).
+
+Docker embedded DNS may remain available so Gitea can resolve the Compose service name `tor`. That is intentional and required for SOCKS. Gitea must not use Docker DNS, host DNS, or a public resolver for application egress destinations such as clearnet or onion mirror hostnames. All application hostname resolution for outbound work must occur through Tor remote hostname resolution via the SOCKS proxy (`socks5h`).
 
 Configure Gitea's global HTTP proxy, webhook proxy, and Git HTTP proxy to use the Tor SOCKS endpoint with remote hostname resolution (`socks5h://tor:9050` or equivalent). Apply the proxy to all destinations, not only `*.onion`. HTTPS certificate verification remains enabled.
 
-Acceptance tests and `eog-admin doctor` must prove defense in depth: direct TCP egress from the Gitea container fails, and clearnet mirror hostnames do not resolve through Docker or host DNS when Tor is unavailable or when DNS is observed outside Tor.
+Acceptance tests and `eog-admin doctor` must prove defense in depth: a direct TCP connect from the Gitea container to a clearnet address fails; application egress hostnames are not usefully resolved through Docker or host DNS when Tor is stopped; and mirror traffic is observed only through Tor when Tor is available.
 
 Disable unnecessary outbound Gitea features by default, including external avatars, OpenID, mail, Actions, and Gitea update checks. Features that introduce new egress paths remain unsupported until their Tor routing is designed and tested.
 
@@ -75,17 +77,17 @@ The server Tor SOCKS port remains internal to the Compose project and is not pub
 
 Use a pinned official Gitea image. Never use a floating `latest` tag in a release.
 
-For v0.1, ship the standard official Gitea image (root inside the container). Non-root Gitea remains later work once volume layout, secret delivery, administrative commands, backup, and restore are proven by tests. Do not block v0.1 on non-root Gitea.
+For v0.1, ship the standard official Gitea image. Do not block v0.1 on the separate non-root Gitea image variant. Before locking secret ownership, spike the pinned image and record the uid and gid of the running Gitea application process. Official images often start as root and then run the app as a non-root user such as `git` (commonly uid 1000). Secret delivery must match that process user.
 
 The Tor image is a security-critical component, not a minor implementation choice. Use a small project-owned `Dockerfile.tor` based on a pinned reputable distribution image and pinned Tor package. If a third-party image is considered, it must have reviewable source, active maintenance, non-root execution, multi-architecture support where promised, and a pinned digest.
 
 ### Locked v0.1 image pinning and updates
 
-Each release ships a version manifest under the install root. At minimum it contains the project release version and a lock file (`images.lock`) listing every container image reference by digest (Gitea and the project-built Tor image).
+Each project release is a verified tarball or git tag checkout that contains the installer scripts, `compose.yml`, `Dockerfile.tor`, `VERSION`, `images.lock`, templates, and documentation. Operators install and update from that release tree. v0.1 does not phone home to discover newer releases.
 
-`install.sh` and `eog-admin update` may pull only images listed in the manifest for the target release version. Updates are explicit release-to-release operations from this project's verified release artifacts, not open-ended registry browsing and never `latest`.
+`images.lock` records the pinned official Gitea image by digest and the pinned base image plus Tor package inputs used by `Dockerfile.tor`. On install and update, pull the pinned Gitea digest from the registry and build the Tor image locally from `Dockerfile.tor`. Record the resulting local Tor image identity in install state. Never follow `latest`.
 
-`eog-admin update` accepts an optional target version argument. With no argument, it reports the installed version and the newest available supported release without changing anything. Before replacing images it creates a backup, recreates the stack from the new manifest, verifies `/api/healthz` and Tor-only egress, and confirms the onion hostname is unchanged. Rollback after a failed or incompatible migration is restore from the pre-update backup, not retagging an older image.
+`eog-admin update` means the operator unpacks or checks out a newer release and runs update from that tree. With no target argument, print the installed `VERSION` and instruct the operator to download a newer release artifact; do not query GitHub or any remote channel automatically. Before replacing images it creates a backup, rebuilds Tor if needed, recreates the stack from the new release's manifests, verifies `/api/healthz` and Tor-only egress, and confirms the onion hostname is unchanged. Rollback after a failed or incompatible migration is restore from the pre-update backup, not retagging an older image.
 
 The initial v0.1 release target is `linux/amd64`. Additional architectures may follow once the first path is proven.
 
@@ -126,15 +128,36 @@ DISABLE_QUERY_AUTH_TOKEN = true
 OFFLINE_MODE = true
 DISABLE_SSH = true
 PUBLIC_URL_DETECTION = never
+
+[migrations]
+ALLOWED_DOMAINS = *.onion
+BLOCKED_DOMAINS =
+ALLOW_LOCALNETWORKS = false
+SKIP_TLS_VERIFY = false
+
+[proxy]
+PROXY_ENABLED = true
+PROXY_URL = socks5h://tor:9050
+PROXY_HOSTS = **
 ```
 
 `OFFLINE_MODE = true` disables casual external integrations such as gravatar and update checks. It must not block administrator-configured mirroring, migration, or webhooks that use the Tor proxy. Verify this against the pinned Gitea release during acceptance testing; if it interferes, narrow the setting rather than weakening egress isolation.
 
-The bootstrap administrator is not a shared team account. Administrators create individual users, organizations, and teams. Team members receive only the permissions they need.
+### Locked v0.1 migration host policy
+
+Gitea migration and mirror URL checks use `[migrations]` settings. Current Gitea behavior (verified against upstream `services/migrations/migrate.go` and the config cheat sheet):
+
+- An empty `ALLOWED_DOMAINS` value does **not** mean deny-all. Empty means allow public "external" hosts via Gitea's builtin external matcher.
+- `.onion` hostnames typically do not resolve to public IPs through normal DNS, so they fail that empty/external default. Onion remotes require an explicit pattern such as `*.onion`.
+- When `ALLOWED_DOMAINS` is non-empty, only matching hostname patterns are allowed (comma-separated; wildcards supported). That replaces the builtin external allowlist.
+- `ALLOW_LOCALNETWORKS` is the correct key name (not `ALLOW_LOCAL_NETWORKS`). When false, private and loopback destinations are blocked at the application SSRF layer. Current Gitea dial logic still permits connecting to the configured proxy host and port, so Tor SOCKS at `tor:9050` does not require `ALLOW_LOCALNETWORKS = true`.
+- `BLOCKED_DOMAINS` denies matching hosts. `SKIP_TLS_VERIFY` must remain false.
+
+Therefore v0.1 defaults to `ALLOWED_DOMAINS = *.onion` and `ALLOW_LOCALNETWORKS = false`. Do not ship an empty allowlist and do not ship `*`. Operators who need clearnet mirrors edit `config/app.ini` (then recreate/restart via `eog-admin`) to append approved domains, for example `*.onion,github.com,codeberg.org`. Document that changing this file is an administrative action and that `*` would allow all external hosts. Acceptance tests must cover onion pull/push mirrors with the default allowlist and a clearnet mirror after an explicit domain is added. Confirm `*.onion` matching against the pinned Gitea release during the first integration spike.
+
+The bootstrap administrator username defaults to `gitea-admin`. Optional installer flag `--admin-user NAME` may override it on first bootstrap only. Store the chosen username in `creds.txt` and install state. Re-install never renames the account. This account is bootstrap material, not a shared daily team login. Administrators create individual users, organizations, and teams. Team members receive only the permissions they need.
 
 Custom Git hooks remain disabled because they permit server-side code execution. SSH access and SSH push-mirror workarounds are not supported in v1. HTTP Git over Tor with personal access tokens is the supported Git transport.
-
-Migration access defaults to known external peers and onion destinations. The exact Gitea setting is `ALLOW_LOCALNETWORKS`, not `ALLOW_LOCAL_NETWORKS`; it remains false unless a later LAN feature explicitly requires it. At install time `ALLOWED_DOMAINS` defaults to empty; administrators add approved clearnet domains through Gitea settings when needed. Never default to `*`. `SKIP_TLS_VERIFY` remains false.
 
 Optional two-factor enforcement is controlled by installer flag `--require-2fa`, which sets Gitea's `ENFORCE_TWO_FACTOR_AUTH = true` in the generated configuration. Default is off; documentation still strongly recommends TOTP for all accounts.
 
@@ -146,9 +169,9 @@ The console summary points to the credentials file without unnecessarily repeati
 
 The credentials file is sensitive bootstrap material. Documentation instructs the operator to change the initial password, use an individual administrator account, and securely delete or archive the file when it is no longer needed.
 
-Generate Gitea's `SECRET_KEY`, `INTERNAL_TOKEN`, and other long-lived secrets once. Store them in root-readable files under the install root and pass them through Gitea's `__FILE` configuration support instead of ordinary environment variables. These secrets are included in protected backups because losing them can make encrypted Gitea data unusable.
+Generate Gitea's `SECRET_KEY`, `INTERNAL_TOKEN`, and other long-lived secrets once. Store them under the install root and pass them through Gitea's `__FILE` configuration support instead of ordinary environment variables. These secrets are included in protected backups because losing them can make encrypted Gitea data unusable.
 
-For v0.1 with the root Gitea image, keep secrets under `secrets/` with directory mode `700` and secret files mode `600`, owned by root. Mount that directory read-only into the Gitea container. The Gitea process runs as root inside the container in v0.1, so no group ownership workaround is required yet. When non-root Gitea is adopted later, revisit ownership using a fixed container UID/GID and group-readable secret files without weakening host permissions.
+Keep secrets under `secrets/`. The install root and secrets directory remain host-root managed: only root may create, replace, or delete secret files. Mount `secrets/` read-only into the Gitea container. File ownership and modes must allow the running Gitea application process to read `__FILE` secrets after the uid/gid spike. Preferred v0.1 pattern after the spike: parent directory mode `750` or `700` owned by root, secret files mode `640` owned `root:<gitea-group>` or owned by the container application uid under a root-owned parent that only root can modify. Do not make secrets world-readable. When the non-root Gitea image variant is adopted later, revisit ownership without weakening host permissions.
 
 Mirrors use dedicated service accounts or narrowly scoped access tokens. Mirror credentials are entered through Gitea's authorization fields and are never embedded in repository URLs, logs, documentation, or commands.
 
@@ -209,11 +232,11 @@ The installer runs one automatic backup after successful bootstrap and stores it
 
 `restore` verifies the archive format, manifest, and checksums; makes a pre-restore safety backup; requires explicit confirmation; stops the service; restores data with correct ownership and modes; restarts the service; and verifies Gitea health and the expected onion identity.
 
-`update` makes a backup first, retrieves the approved image set for the target release from the project version manifest, recreates the stack, verifies `/api/healthz` and Tor-only egress, and confirms the onion hostname is unchanged. It never follows `latest`. If an update performs an incompatible database migration, recovery uses the pre-update backup rather than pretending that changing the image tag is a safe rollback.
+`update` is run from a newer unpacked release tree. It makes a backup first, pulls the pinned Gitea digest, rebuilds the Tor image from that release's `Dockerfile.tor` when needed, recreates the stack, verifies `/api/healthz` and Tor-only egress, and confirms the onion hostname is unchanged. With no target it only reports the installed `VERSION` and tells the operator to obtain a newer release. It never follows `latest` and never auto-queries a remote release channel. If an update performs an incompatible database migration, recovery uses the pre-update backup rather than pretending that changing the image tag is a safe rollback.
 
 `onion` prints the current onion hostname and URL read from persisted Tor state. It verifies that hidden-service keys exist with expected permissions. It does not rotate keys, regenerate the hostname, or print private key material.
 
-`reset-admin-password` generates a new password for the bootstrap administrator account, applies it through Gitea's supported administrative path, and prints a one-line reminder to store it securely. It does not rewrite `~/.easy-onion-gitea/creds.txt`; password rotation after bootstrap is an explicit operator action.
+`reset-admin-password` generates a new password for the bootstrap administrator account (`gitea-admin` unless overridden at first install), applies it through Gitea's supported administrative path, and prints a one-line reminder to store it securely. It does not rewrite `~/.easy-onion-gitea/creds.txt`; password rotation after bootstrap is an explicit operator action.
 
 ## Install root layout
 
@@ -228,7 +251,7 @@ The v0.1 install root is `/opt/easy-onion-gitea` with this layout:
   config/
     app.ini               # generated Gitea configuration
     torrc                 # Tor hidden service configuration
-  secrets/                # root-only Gitea secrets for __FILE references
+  secrets/                # host-root managed Gitea secrets for __FILE references
   data/
     gitea/                # repositories, SQLite database, attachments
     tor/                  # complete Tor data directory including onion keys
@@ -237,19 +260,32 @@ The v0.1 install root is `/opt/easy-onion-gitea` with this layout:
 
 The systemd unit loads `config.env` from the install root. Re-running `install.sh` preserves `config.env`, `secrets/`, `data/`, and `state/`; it may refresh static templates and unit files from the release when appropriate without rotating secrets or the onion identity.
 
-Gitea first-boot is handled by the installer, not the web wizard. The installer writes `config/app.ini` with `INSTALL_LOCK = true`, mounts persistent data, starts the stack, and creates the bootstrap administrator through Gitea's supported CLI or API path. The web install wizard must not appear on a fresh install.
+### Locked v0.1 bootstrap sequence
+
+Gitea first-boot is handled by the installer, not the web wizard. The onion hostname must exist before Gitea is treated as configured, because `ROOT_URL` is the canonical onion URL.
+
+Preferred sequence:
+
+1. Create the install root, secrets, `config.env`, Tor `torrc`, and data directories.
+2. Start Tor first (or start the Compose project in an order that brings Tor up before Gitea is considered ready).
+3. Wait until the persisted Tor hidden-service `hostname` file exists. Prefer letting Tor create v3 keys on first run and reading that file. Do not hand-roll onion key generation in v0.1 unless a later need appears.
+4. Write `config/app.ini` with `INSTALL_LOCK = true`, `PUBLIC_URL_DETECTION = never`, `ROOT_URL=http://<onion>/`, and `LOCAL_ROOT_URL=http://gitea:3000/`.
+5. Start or restart Gitea with that configuration, wait on `/api/healthz`, and create the bootstrap administrator `gitea-admin` (or `--admin-user`) through Gitea's supported CLI or API path.
+6. Write credentials, run `eog-admin doctor`, and create the initial backup.
+
+The web install wizard must not appear on a fresh install. Re-installs and updates must reuse the existing onion identity and must never regenerate hidden-service keys.
 
 ## Installer behavior
 
 The intended server command is:
 
 ```text
-sudo ./install.sh [--http-port N] [--require-2fa]
+sudo ./install.sh [--http-port N] [--admin-user NAME] [--require-2fa]
 ```
 
 The installer verifies sudo usage, supported distribution, systemd, available disk space, port availability, Docker Engine, and Compose v2. It uses supported distribution packages or Docker's documented repository and does not execute an unaudited remote convenience script through a shell.
 
-The installer creates the install root, generates secrets, writes fixed templates with validated substitutions, writes `config.env` and `config/app.ini`, installs the systemd unit and `eog-admin`, enables the stack, waits on `/api/healthz`, creates the administrator idempotently, waits for Tor's onion hostname, writes credentials, runs `eog-admin doctor`, and creates the initial backup. The initial backup briefly stops the service for SQLite consistency; documentation should mention this expected pause at the end of install.
+The installer creates the install root, generates secrets, writes fixed templates with validated substitutions, writes `config.env`, installs the systemd unit and `eog-admin`, follows the locked bootstrap sequence (Tor up, onion hostname present, then `app.ini` with canonical `ROOT_URL`, then Gitea health and admin creation), writes credentials, runs `eog-admin doctor`, and creates the initial backup. The initial backup briefly stops the service for SQLite consistency; documentation should mention this expected pause at the end of install.
 
 Re-running the installer preserves the port, credentials, secrets, onion identity, and data. It reports the existing installation and directs the operator to `eog-admin` for updates, backups, restore, and password changes.
 
@@ -275,7 +311,7 @@ If `eog-admin` later grows into complex version migrations, structured archive t
 
 All code, documentation, comments, logs, command output, examples, and file contents use ASCII-only language. Do not use emojis or em dashes. Prefer clear paragraph format in documentation. Occasional short lists, outlines, and code blocks are acceptable when they improve comprehension.
 
-Add a concise `AGENTS.md` defining these conventions, the privacy and Tor-only requirements, secret-handling rules, shell safety rules, supported architecture, test requirements, and the prohibition on weakening egress isolation for convenience.
+Add a concise `AGENTS.md` defining these conventions, the privacy and Tor-only requirements, secret-handling rules, shell safety rules, supported architecture, test requirements, and the prohibition on weakening egress isolation for convenience. Include: do not use PC language for the sake of being PC. Terms such as "whitelist" and "blacklist" are not offensive or intended to offend; prefer the ordinary technical words when they are clear.
 
 Add a basic `SECURITY.md` defining the threat model, supported release policy, vulnerability reporting method, security boundaries, Tor and host limitations, mirror limitations, backup sensitivity, and handling expectations for onion private keys and Gitea secrets. A real private reporting route must be selected before the first public release.
 
@@ -311,7 +347,7 @@ easy-onion-gitea/
 
 ## Operator and team workflows
 
-The server operator downloads a verified release, runs `sudo ./install.sh`, waits for all health checks and the initial backup, and opens the credentials file. They can use the onion URL in Tor Browser or localhost from the server. After signing in, they change the bootstrap password, create individual accounts, create organizations and teams, and configure authoritative repositories and replicas.
+The server operator downloads a verified release, runs `sudo ./install.sh` from that tree, waits for all health checks and the initial backup, and opens the credentials file. They can use the onion URL in Tor Browser or localhost from the server. After signing in as `gitea-admin`, they change the bootstrap password, create individual accounts, create organizations and teams, and configure authoritative repositories and replicas. Clearnet mirrors require adding approved domains to `ALLOWED_DOMAINS` before use.
 
 Team members run `sudo ./install-client.sh` on supported Linux workstations, then use `eogit` for clone, pull, and push operations. They use individual Gitea accounts and personal access tokens, not the bootstrap administrator or shared mirror credentials.
 
@@ -331,27 +367,29 @@ Tests must cover fresh installation, idempotent re-installation, reboot recovery
 
 Networking tests must prove that Gitea is bound only to loopback on the host, Tor SOCKS is not host-published, Gitea has no direct TCP egress, DNS destinations do not leak through Docker or host DNS, all clearnet and onion mirror traffic traverses Tor, and Gitea operations fail closed when Tor is unavailable.
 
-Mirroring tests must cover onion pull mirror, clearnet pull mirror through Tor, onion push mirror, clearnet push mirror through Tor, token rotation, failed credentials, synchronization scheduling, explicit force-push warnings, and preservation of the declared authoritative repository.
+Mirroring tests must cover onion pull mirror under the default `ALLOWED_DOMAINS = *.onion` policy, clearnet pull mirror through Tor only after an explicit approved domain is added, onion push mirror, clearnet push mirror through Tor with an approved domain, rejection of clearnet remotes when only `*.onion` is allowed, token rotation, failed credentials, synchronization scheduling, explicit force-push warnings, and preservation of the declared authoritative repository.
 
 Client tests must cover `eogit` clone, pull, push, submodules, SOCKS failure, DNS failure, Tor Browser port override, protocol rejection, and prevention of SSH or helper-protocol bypass.
 
 Operations tests must cover initial backup, manual backup, checksum rejection, restore, pre-restore safety backup, onion identity preservation, administrator password reset, successful update, failed update recovery, and disk-space failure.
 
-Container tests must verify pinned images, non-root execution where selected, absence of privileged mode and Docker socket mounts, expected capabilities, persistent data, bounded logs, and safe behavior after Docker daemon restart.
+Container tests must verify pinned images, the recorded Gitea process uid can read `__FILE` secrets, absence of privileged mode and Docker socket mounts, expected capabilities, persistent data, bounded logs, and safe behavior after Docker daemon restart.
 
 ## v0.1 completion checklist
 
 - [ ] Project-owned pinned Tor image and persistent identity
-- [ ] Pinned official Gitea image (root variant for v0.1) and fixed Compose topology
-- [ ] Enforced Tor-only Gitea TCP and DNS egress
+- [ ] Pinned official Gitea image and fixed Compose topology
+- [ ] Enforced Tor-only Gitea TCP and application-egress DNS via SOCKS
 - [ ] Localhost-only HTTP with configurable host port
-- [ ] Canonical onion `ROOT_URL` and fixed internal URL
+- [ ] Tor-first bootstrap with canonical onion `ROOT_URL` and fixed internal URL
 - [ ] Private-team Gitea defaults and individual-account workflow
+- [ ] Migration allowlist default `*.onion`, Tor proxy settings, clearnet domains opt-in
+- [ ] Bootstrap admin `gitea-admin` with optional `--admin-user`
 - [ ] Idempotent sudo installer and systemd unit
-- [ ] Root-readable Gitea secret files using `__FILE`
+- [ ] Host-root managed Gitea secret files using `__FILE`, readable by the app uid
 - [ ] Safe credentials file for the invoking user
 - [ ] `eogit` and supported client installer
-- [ ] Version manifest and `images.lock` wired into install and update
+- [ ] Release-tree install/update with local Tor image build and `images.lock`
 - [ ] `eog-admin` status, doctor, backup, restore, update, onion, and password reset
 - [ ] Documented uninstall with default retain and explicit `--purge`
 - [ ] Automatic post-install backup with manifest and checksums
@@ -367,4 +405,4 @@ Possible later work includes non-root Gitea, optional Tor v3 client authorizatio
 
 These items are still open but no longer block the overall architecture:
 
-Select and pin the initial Debian base, Tor package, and Gitea release versions that populate `images.lock`. Prove the locked two-network Compose design in acceptance tests, including observed DNS behavior when Tor is down. Finalize backup archive format (tar structure, compression, manifest fields) and operator-facing encryption guidance; v0.1 backups are root-readable local archives and encryption for off-host copy remains operator-side unless a later feature adds it. Select the public vulnerability reporting route before the first public release.
+Select and pin the initial Debian base, Tor package, and Gitea release versions that populate `images.lock`. Spike the pinned Gitea image for the application process uid/gid and lock secret file ownership to match. Confirm against that Gitea release that `*.onion` allowlisting permits onion migrate/mirror URLs, that Tor SOCKS dial works with `ALLOW_LOCALNETWORKS = false`, and that proxy remote DNS (`socks5h`) is accepted by Gitea's proxy URL parser. Prove the locked two-network Compose design in acceptance tests, including that Docker DNS may resolve `tor` while application egress hostnames fail closed when Tor is down. Finalize backup archive format (tar structure, compression, manifest fields) and operator-facing encryption guidance; v0.1 backups are root-readable local archives and encryption for off-host copy remains operator-side unless a later feature adds it. Select the public vulnerability reporting route before the first public release.
