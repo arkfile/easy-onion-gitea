@@ -1,6 +1,6 @@
-# easy-onion-gitea -- WIP Plan
+# easy-onion-gitea -- v0.1 design record
 
-This is a planning document for the new `easy-onion-gitea` project. The project will make a private, Tor-reachable Gitea instance easy to deploy on a spare VPS or Linux computer. It is intended for non-developer and non-IT operators as well as teams that need to replicate Git repositories between independently administered Gitea instances.
+This is the design record for `easy-onion-gitea`. The project makes a private, Tor-reachable Gitea instance easy to deploy on a spare VPS or Linux computer. It is intended for non-developer and non-IT operators as well as teams that need to replicate Git repositories between independently administered Gitea instances. Locked decisions below match the implemented v0.1 tree; the completion checklist tracks what has been verified on a live host versus remaining acceptance work.
 
 ## Goal
 
@@ -34,13 +34,15 @@ Gitea is available through both its onion URL and a localhost HTTP listener. The
 
 The installer accepts `--http-port N` to change the host-side port. The selected value is validated and persisted so re-runs retain it. A port collision causes a clear failure and directs the operator to choose another port; the installer does not silently choose one.
 
-The Compose mapping is:
+Docker does not wire host port mappings for containers attached only to `internal: true` networks. Host publish therefore lives on the `loopback-proxy` sidecar (socat), not on the Gitea service:
 
 ```yaml
-127.0.0.1:${HTTP_PORT}:3000
+# loopback-proxy service
+ports:
+  - "127.0.0.1:${HTTP_PORT}:3000"
 ```
 
-Changing the host port does not change Gitea's internal port. Tor always maps onion port 80 to `gitea:3000` on the internal Compose network.
+Changing the host port does not change Gitea's internal port (`3000`). Tor maps onion port 80 to Gitea's static address on the internal network (`172.30.0.10:3000`). Tor does not accept Docker DNS names in `HiddenServicePort`, so the Compose `internal` subnet and Gitea `ipv4_address` are pinned.
 
 The onion URL is Gitea's canonical `ROOT_URL`. Set `PUBLIC_URL_DETECTION=never` so untrusted Host headers cannot alter generated links. Set `LOCAL_ROOT_URL=http://gitea:3000/` for Gitea's internal workers. Local access works on the configured localhost port, but generated links and clone URLs remain canonical onion URLs.
 
@@ -104,7 +106,11 @@ Use a `Type=oneshot` unit with `RemainAfterExit=yes`, `Requires=docker.service`,
 
 The intended start operation is equivalent to `docker compose up -d --remove-orphans`. The intended stop operation is `docker compose down`. Compose services also use restart policies so a Docker daemon restart recovers the containers.
 
+Because `RemainAfterExit=yes`, a plain `systemctl start` is a no-op when systemd already considers the unit active (common after an interrupted bootstrap that brought Tor up under the unit). Installer, backup, restore, and apply-config paths therefore stop or restart the unit rather than relying on `start` alone. Bootstrap also runs `compose down` before starting Tor so network IPAM changes apply cleanly.
+
 The unit references the fixed install root and persisted environment file. It does not depend on a login session or a user's working directory.
+
+Tor `torrc` must not set `User debian-tor` when the image already drops to that user via Dockerfile `USER` and Compose `cap_drop: ALL`. Tor then fails group setup and never publishes the onion hostname.
 
 ## Private-team defaults
 
@@ -121,6 +127,7 @@ DISABLE_REGISTRATION = true
 REQUIRE_SIGNIN_VIEW = true
 DEFAULT_KEEP_EMAIL_PRIVATE = true
 DEFAULT_ORG_MEMBER_VISIBLE = false
+ENABLE_PASSKEY_AUTHENTICATION = false
 
 [security]
 INSTALL_LOCK = true
@@ -250,15 +257,20 @@ The v0.1 install root is `/opt/easy-onion-gitea` with this layout:
   VERSION                 # project release version installed on this host
   images.lock             # pinned image digests for this release
   compose.yml             # copied from release artifact
+  Dockerfile.tor          # project-owned Tor image build
+  Dockerfile.loopback     # loopback publish sidecar build
   config.env              # persisted host settings (HTTP_PORT and substitutions)
   config/
     app.ini               # generated Gitea configuration
+    app.ini.tmpl          # template used for first render
     torrc                 # Tor hidden service configuration
   secrets/                # host-root managed Gitea secrets for __FILE references
   data/
     gitea/                # repositories, SQLite database, attachments
     tor/                  # complete Tor data directory including onion keys
-  state/                  # installer and admin bookkeeping as needed
+  state/                  # install_complete, admin_bootstrapped, backup markers, tor uid/gid
+  bin/                    # installed eog-admin copy
+  scripts/                # helpers and lib.sh
 ```
 
 The systemd unit loads `config.env` from the install root. Re-running `install.sh` preserves `config.env`, `secrets/`, `data/`, and `state/`; it may refresh static templates and unit files from the release when appropriate without rotating secrets or the onion identity.
@@ -270,10 +282,10 @@ Gitea first-boot is handled by the installer, not the web wizard. The onion host
 Preferred sequence:
 
 1. Create the install root, secrets, `config.env`, Tor `torrc`, and data directories.
-2. Start Tor first (or start the Compose project in an order that brings Tor up before Gitea is considered ready).
+2. Stop any stale `easy-onion-gitea.service` state, then start Tor first (Compose `up` for `tor` only).
 3. Wait until the persisted Tor hidden-service `hostname` file exists. Prefer letting Tor create v3 keys on first run and reading that file. Do not hand-roll onion key generation in v0.1 unless a later need appears.
-4. Write `config/app.ini` with `INSTALL_LOCK = true`, `PUBLIC_URL_DETECTION = never`, `ROOT_URL=http://<onion>/`, and `LOCAL_ROOT_URL=http://gitea:3000/`.
-5. Start or restart Gitea with that configuration, wait on `/api/healthz`, and create the bootstrap administrator `gitea-admin` (or `--admin-user`) through Gitea's supported CLI or API path.
+4. Write `config/app.ini` with `INSTALL_LOCK = true`, `PUBLIC_URL_DETECTION = never`, `ROOT_URL=http://<onion>/`, `LOCAL_ROOT_URL=http://gitea:3000/`, and `ENABLE_PASSKEY_AUTHENTICATION = false` (also enforced on resume when preserving an existing `app.ini`).
+5. Restart the systemd unit so Gitea and `loopback-proxy` start with that configuration, wait on host `/api/healthz`, and create the bootstrap administrator `gitea-admin` (or `--admin-user`) through Gitea's supported CLI or API path.
 6. Write credentials, run `eog-admin doctor`, and create the initial backup.
 
 The web install wizard must not appear on a fresh install. Re-installs and updates must reuse the existing onion identity and must never regenerate hidden-service keys.
@@ -306,7 +318,7 @@ Use Bash for `install.sh`, `install-client.sh`, `uninstall.sh`, `eogit`, `eog-ad
 
 All Bash scripts use `set -Eeuo pipefail`, explicit argument validation, safe temporary directories, cleanup traps, atomic file replacement, and careful quoting. Run ShellCheck and shfmt in development and CI. Do not parse structured configuration with fragile text pipelines when a fixed template or purpose-built command is available.
 
-Use YAML for `compose.yml`, systemd unit syntax for the service, Tor configuration syntax for `torrc`, Dockerfile syntax for the project-owned Tor image, and Markdown for documentation.
+Use YAML for `compose.yml`, systemd unit syntax for the service, Tor configuration syntax for `torrc`, Dockerfile syntax for the project-owned Tor and loopback-proxy images, and Markdown for documentation.
 
 If `eog-admin` later grows into complex version migrations, structured archive transformations, or a substantial interactive application, Go is the preferred replacement because it can ship as one static binary. This is not required for v1.
 
@@ -381,25 +393,28 @@ Container tests must verify pinned images, the recorded Gitea process uid can re
 
 ## v0.1 completion checklist
 
-- [ ] Project-owned pinned Tor image and persistent identity
-- [ ] Pinned official Gitea image and fixed Compose topology
-- [ ] Enforced Tor-only Gitea TCP and application-egress DNS via SOCKS
-- [ ] Localhost-only HTTP with configurable host port
-- [ ] Tor-first bootstrap with canonical onion `ROOT_URL` and fixed internal URL
-- [ ] Private-team Gitea defaults and individual-account workflow
-- [ ] Migration whitelist default `*.onion`, Tor proxy settings, clearnet domains opt-in
-- [ ] Bootstrap admin `gitea-admin` with optional `--admin-user`
-- [ ] Idempotent sudo installer and systemd unit
-- [ ] Host-root managed Gitea secret files using `__FILE`, readable by the app uid
-- [ ] Safe credentials file for the invoking user
-- [ ] `eogit` and supported client installer
-- [ ] Release-tree install/update with local Tor image build and `images.lock`
-- [ ] `eog-admin` status, doctor, backup, restore, update, onion, and password reset
-- [ ] Documented uninstall with default retain and explicit `--purge`
-- [ ] Automatic post-install backup with manifest and checksums
-- [ ] README, AGENTS, SECURITY, mirroring, hardening, client, and recovery docs
-- [ ] ShellCheck, shfmt, and complete acceptance tests
-- [ ] Verified fresh install, reboot, mirror, update, backup, and restore paths
+Verified on a live Debian VM unless noted:
+
+- [x] Project-owned pinned Tor image and persistent identity
+- [x] Pinned official Gitea image and fixed Compose topology (`internal` / `egress` / `publish`, loopback-proxy)
+- [x] Enforced Tor-only Gitea TCP egress (doctor clearnet probe); SOCKS reachability from Gitea
+- [x] Localhost-only HTTP via loopback-proxy on configurable host port
+- [x] Tor-first bootstrap with canonical onion `ROOT_URL` and Tor Browser access to the login page
+- [x] Private-team Gitea defaults including passkeys disabled
+- [x] Migration whitelist default `*.onion` and Tor proxy settings in rendered config
+- [x] Bootstrap admin `gitea-admin` with optional `--admin-user`
+- [x] Idempotent sudo installer and systemd unit (resume after interrupt; stop/restart for oneshot unit)
+- [x] Host-root managed Gitea secret files using `SECRET_KEY_URI` / rendered tokens, readable by the app uid
+- [x] Safe credentials file for the invoking user
+- [x] Release-tree install with local Tor and loopback image builds and `images.lock`
+- [x] `eog-admin` doctor and onion; post-install backup with manifest and checksums
+- [x] README, AGENTS, SECURITY, mirroring, hardening, client, and recovery docs (reporting route still TBD)
+- [x] ShellCheck, shfmt, and static smoke tests in CI
+- [ ] `eogit` client path verified end-to-end against this onion (clone/pull/push)
+- [ ] Clearnet migrate reject / allowlist opt-in and fail-closed when Tor is stopped
+- [ ] Reboot persistence and full restore / update acceptance paths
+- [ ] Documented uninstall retain and `--purge` exercised on a disposable host
+- [ ] Public vulnerability reporting route selected before first public release
 
 ## Later work
 
@@ -407,4 +422,6 @@ Possible later work includes non-root Gitea, optional Tor v3 client authorizatio
 
 ## Other implementation decisions
 
-v0.1.0 pins are recorded in `images.lock`: Gitea `1.27.1`, Debian `bookworm-slim`, and Tor Project package `0.4.9.11-1~d12.bookworm+1`. Secret files are owned `root:<gitea-gid>` mode `640`. Install uses `state/install_complete` so interrupted installs can resume. Updates preserve operator `app.ini`. Backup format is `easy-onion-gitea-backup-v1` (tar.gz with `MANIFEST` and `SHA256SUMS` excluding the checksum file from its own hash). Still verify on a live host: container startup, `SECRET_KEY_URI`, `*.onion` migrate allowlisting, Tor SOCKS with `ALLOW_LOCALNETWORKS = false`, `socks5h` proxy URL acceptance, and full acceptance tests in `tests/acceptance.md`. Select the public vulnerability reporting route before the first public release.
+v0.1.0 pins are recorded in `images.lock`: Gitea `1.27.1`, Debian `bookworm-slim`, and Tor Project package `0.4.9.11-1~d12.bookworm+1`. Secret files are owned `root:<gitea-gid>` mode `640` (doctor compares numeric `0:gid`). Install uses `state/install_complete` so interrupted installs can resume. Updates preserve operator `app.ini` while enforcing `ENABLE_PASSKEY_AUTHENTICATION = false`. Backup format is `easy-onion-gitea-backup-v1` (tar.gz with `MANIFEST` and `SHA256SUMS` excluding the checksum file from its own hash). RETURN traps expand temp paths at set time so `set -u` does not fail cleanup.
+
+Live host progress: fresh install, doctor, localhost healthz, onion login in Tor Browser, and initial backup have succeeded. Remaining acceptance work is listed unchecked above and in `tests/acceptance.md` (client Git over Tor, mirroring policy, reboot, restore, update, uninstall). Select the public vulnerability reporting route before the first public release.

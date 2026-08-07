@@ -11,8 +11,9 @@ The onion address is public routing information. It is not a password. Gitea aut
 ## Security boundaries
 
 - Gitea has no Docker egress network attachment; outbound application traffic must use the internal Tor SOCKS endpoint.
+- Host localhost HTTP is published only through the loopback-proxy sidecar; Gitea itself is not attached to the Compose `publish` or `egress` networks.
 - Host package installs, Docker image pulls, and installer downloads are outside the Tor-only guarantee.
-- Custom Git hooks are disabled. SSH Git is disabled in v1.
+- Custom Git hooks are disabled. SSH Git is disabled in v1. Passkey (WebAuthn) authentication is disabled by default.
 - Migration destination hosts are limited by Gitea `ALLOWED_DOMAINS` (default `*.onion`).
 - Backups contain repositories, SQLite data, Gitea secrets, and Tor hidden-service keys. Treat them as highly sensitive. v0.1 writes root-readable local archives; encrypt before copying off-host.
 

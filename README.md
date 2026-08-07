@@ -1,6 +1,6 @@
 # easy-onion-gitea
 
-easy-onion-gitea turns a supported Debian or Ubuntu host into a private Gitea instance published as a Tor v3 onion service. One sudo install command brings up Docker Compose services for Gitea and Tor, a systemd unit for reboot persistence, localhost access for on-server work, Tor-only Gitea egress for mirrors, and simple admin commands.
+easy-onion-gitea turns a supported Debian or Ubuntu host into a private Gitea instance published as a Tor v3 onion service. One sudo install command brings up Docker Compose services for Gitea, Tor, and a loopback-only publish proxy, a systemd unit for reboot persistence, localhost access for on-server work, Tor-only Gitea egress for mirrors, and simple admin commands.
 
 This project provides Git repository replication with one authoritative source per mirrored repository. It is not multi-master synchronization.
 
@@ -102,7 +102,7 @@ Updates are release-tree operations. Unpack a newer release and pass its directo
 
 ## Mirroring
 
-Default migration whitelist is `*.onion`. To mirror from clearnet hosts, add domains to `ALLOWED_DOMAINS` in `/opt/easy-onion-gitea/config/app.ini` (for example `*.onion,github.com`) and recreate the stack with `sudo eog-admin` / Compose. Never set `*` unless you intentionally allow all external hosts.
+Default migration whitelist is `*.onion`. To mirror from clearnet hosts, add domains to `ALLOWED_DOMAINS` in `/opt/easy-onion-gitea/config/app.ini` (for example `*.onion,github.com`) and run `sudo eog-admin apply-config`. Never set `*` unless you intentionally allow all external hosts.
 
 Every mirror needs one authoritative repository. Replicas must not take independent commits to mirrored refs. See [docs/mirroring.md](docs/mirroring.md).
 

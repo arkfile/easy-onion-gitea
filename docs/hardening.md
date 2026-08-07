@@ -5,15 +5,17 @@
 - Host HTTP is published only on `127.0.0.1` via the `loopback-proxy` sidecar.
 - Tor SOCKS is internal to Compose and must not be published on the host.
 - Gitea attaches only to the `internal` Compose network (`internal: true`).
-- Docker does not wire host port mappings for containers on internal-only networks, so `loopback-proxy` attaches to `internal` plus a non-internal `publish` network and forwards to Gitea's static IP.
+- Docker does not wire host port mappings for containers on internal-only networks, so `loopback-proxy` attaches to `internal` plus a non-internal `publish` network and forwards to Gitea's static IP (`172.30.0.10:3000`).
+- Tor `HiddenServicePort` must target that static IP. Tor does not accept Docker DNS names such as `gitea:3000`.
 - Tor attaches to `internal` and `egress`. Gitea must never attach to `egress` or `publish`.
 - Application egress uses SOCKS to `tor:9050` with remote hostname resolution.
+- Tor `torrc` must not set `User` when the image already runs as `debian-tor` under `cap_drop: ALL`.
 
 ## Gitea defaults
 
-Private-team defaults disable open registration, force private repositories, disable SSH Git, disable custom Git hooks, disable Actions, disable mailer and OpenID, and set `OFFLINE_MODE`. Migration whitelist defaults to `*.onion`.
+Private-team defaults disable open registration, force private repositories, disable SSH Git, disable custom Git hooks, disable Actions, disable mailer and OpenID, disable passkey authentication, and set `OFFLINE_MODE`. Migration whitelist defaults to `*.onion`.
 
-Optional install flag `--require-2fa` sets `ENFORCE_TWO_FACTOR_AUTH`. TOTP is recommended for all accounts even when not enforced.
+Optional install flag `--require-2fa` sets `ENFORCE_TWO_FACTOR_AUTH`. TOTP is recommended for all accounts even when not enforced. Passkeys stay off by default because WebAuthn behavior can vary across Tor Browser security modes.
 
 ## Secrets
 
