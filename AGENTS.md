@@ -10,7 +10,7 @@ Do not use PC language for the sake of being PC. Terms such as "whitelist" and "
 
 ## Security and privacy
 
-Preserve Tor-only Gitea application egress. Do not weaken container network isolation for convenience. Gitea stays on the Compose `internal` network only. Tor alone may use `egress`.
+Preserve Tor-only Gitea application egress. Do not weaken container network isolation for convenience. Gitea stays on the Compose `internal` network only. Tor alone may use `egress`. Host loopback HTTP is published by the `loopback-proxy` sidecar on the `publish` network; do not attach Gitea to `publish` or `egress`.
 
 Do not mount the Docker socket into containers. Do not use privileged mode, host networking, or floating `latest` tags in releases.
 

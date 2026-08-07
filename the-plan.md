@@ -54,10 +54,11 @@ Gitea connects only to an internal application network. Tor connects to that net
 
 ### Locked v0.1 network design
 
-Use two Compose networks:
+Use three Compose networks:
 
-- `internal`: Gitea and Tor both attach here. Mark this network `internal: true` so it has no route to the public internet. Gitea has no other network attachment.
+- `internal`: Gitea, Tor, and the loopback proxy attach here. Mark this network `internal: true` so it has no route to the public internet. Gitea has no other network attachment.
 - `egress`: Tor attaches here so it can reach the public internet. Gitea must never attach to this network.
+- `publish`: Non-internal network used only by `loopback-proxy` so Docker can wire `127.0.0.1:HTTP_PORT` (containers on internal-only networks do not get host port mappings). Gitea must never attach here.
 
 Gitea reaches the internet only by talking to Tor on `internal`. Tor exposes its SOCKS endpoint on `internal` at a fixed service name and port (for example `tor:9050`).
 
@@ -83,9 +84,9 @@ The Tor image is a security-critical component, not a minor implementation choic
 
 ### Locked v0.1 image pinning and updates
 
-Each project release is a verified tarball or git tag checkout that contains the installer scripts, `compose.yml`, `Dockerfile.tor`, `VERSION`, `images.lock`, templates, and documentation. Operators install and update from that release tree. v0.1 does not phone home to discover newer releases.
+Each project release is a verified tarball or git tag checkout that contains the installer scripts, `compose.yml`, `Dockerfile.tor`, `Dockerfile.loopback`, `VERSION`, `images.lock`, templates, and documentation. Operators install and update from that release tree. v0.1 does not phone home to discover newer releases.
 
-`images.lock` records the pinned official Gitea image by digest and the pinned base image plus Tor package inputs used by `Dockerfile.tor`. On install and update, pull the pinned Gitea digest from the registry and build the Tor image locally from `Dockerfile.tor`. Record the resulting local Tor image identity in install state. Never follow `latest`.
+`images.lock` records the pinned official Gitea image by digest and the pinned base image plus Tor package inputs used by `Dockerfile.tor`. On install and update, pull the pinned Gitea digest from the registry and build the Tor and loopback-proxy images locally. Record the resulting local Tor image identity in install state. Never follow `latest`.
 
 `eog-admin update` means the operator unpacks or checks out a newer release and runs update from that tree. With no target argument, print the installed `VERSION` and instruct the operator to download a newer release artifact; do not query GitHub or any remote channel automatically. Before replacing images it creates a backup, rebuilds Tor if needed, recreates the stack from the new release's manifests, verifies `/api/healthz` and Tor-only egress, and confirms the onion hostname is unchanged. Rollback after a failed or incompatible migration is restore from the pre-update backup, not retagging an older image.
 
@@ -325,6 +326,7 @@ easy-onion-gitea/
   README.md
   SECURITY.md
   Dockerfile.tor
+  Dockerfile.loopback
   compose.yml
   config.env.example
   images.lock

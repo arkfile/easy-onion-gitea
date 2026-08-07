@@ -100,6 +100,17 @@ cmd_doctor() {
   else
     printf 'OK  %s\n' "tor socks not published on host"
   fi
+  # Gitea must stay on the internal network only (no egress/publish attachment).
+  gitea_nets="$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$(eog_compose ps -q gitea)" 2>/dev/null || true)"
+  if [[ ${gitea_nets} == *egress* || ${gitea_nets} == *publish* ]]; then
+    printf 'FAIL %s\n' "gitea attached only to internal network"
+    failed=1
+  elif [[ ${gitea_nets} == *internal* ]]; then
+    printf 'OK  %s\n' "gitea attached only to internal network"
+  else
+    printf 'FAIL %s\n' "gitea attached only to internal network"
+    failed=1
+  fi
   check "gitea healthz" curl -fsS --max-time 5 "http://127.0.0.1:${HTTP_PORT}/api/healthz" >/dev/null
 
   # Gitea process user can read mounted secrets.
@@ -196,6 +207,7 @@ cmd_backup() {
   cp -a "${EOG_INSTALL_ROOT}/config.env" "${work}/backup/"
   cp -a "${EOG_INSTALL_ROOT}/compose.yml" "${work}/backup/"
   cp -a "${EOG_INSTALL_ROOT}/Dockerfile.tor" "${work}/backup/" 2>/dev/null || true
+  cp -a "${EOG_INSTALL_ROOT}/Dockerfile.loopback" "${work}/backup/" 2>/dev/null || true
   cp -a "${EOG_INSTALL_ROOT}/config" "${work}/backup/"
   cp -a "${EOG_INSTALL_ROOT}/secrets" "${work}/backup/"
   cp -a "${EOG_INSTALL_ROOT}/data" "${work}/backup/"
@@ -273,6 +285,7 @@ cmd_restore() {
   cp -a "${work}/backup/config.env" "${EOG_INSTALL_ROOT}/config.env"
   cp -a "${work}/backup/compose.yml" "${EOG_INSTALL_ROOT}/compose.yml" 2>/dev/null || true
   cp -a "${work}/backup/Dockerfile.tor" "${EOG_INSTALL_ROOT}/Dockerfile.tor" 2>/dev/null || true
+  cp -a "${work}/backup/Dockerfile.loopback" "${EOG_INSTALL_ROOT}/Dockerfile.loopback" 2>/dev/null || true
   cp -a "${work}/backup/images.lock" "${EOG_INSTALL_ROOT}/images.lock" 2>/dev/null || true
   cp -a "${work}/backup/VERSION" "${EOG_INSTALL_ROOT}/VERSION" 2>/dev/null || true
   if [[ -d "${work}/backup/scripts" ]]; then
@@ -310,10 +323,13 @@ cmd_restore() {
   done
   eog_sync_app_ini_to_runtime
 
-  # Rebuild Tor image if Dockerfile is present so pruned hosts can recover.
+  # Rebuild local images if Dockerfiles are present so pruned hosts can recover.
   if [[ -f "${EOG_INSTALL_ROOT}/Dockerfile.tor" ]]; then
     eog_compose build tor || true
     eog_record_tor_identity || true
+  fi
+  if [[ -f "${EOG_INSTALL_ROOT}/Dockerfile.loopback" ]]; then
+    eog_compose build loopback-proxy || true
   fi
 
   systemctl start "${EOG_SERVICE_NAME}" || eog_compose up -d --remove-orphans
@@ -352,6 +368,7 @@ cmd_update() {
   eog_refresh_static_files "${release_dir}"
 
   TOR_IMAGE="${TOR_IMAGE_NAME}:${TOR_IMAGE_TAG}"
+  LOOPBACK_IMAGE="${LOOPBACK_IMAGE_NAME}:${LOOPBACK_IMAGE_TAG}"
   local http_port admin_user require_2fa
   http_port="${HTTP_PORT}"
   admin_user="${ADMIN_USER}"
@@ -364,6 +381,7 @@ ADMIN_USER=${admin_user}
 REQUIRE_2FA=${require_2fa}
 GITEA_IMAGE=${GITEA_IMAGE}
 TOR_IMAGE=${TOR_IMAGE}
+LOOPBACK_IMAGE=${LOOPBACK_IMAGE}
 DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}
 TOR_APT_SUITE=${TOR_APT_SUITE}
 TOR_PACKAGE_VERSION=${TOR_PACKAGE_VERSION}
@@ -382,7 +400,7 @@ EOF
   fi
 
   docker pull "${GITEA_IMAGE}"
-  eog_compose build tor
+  eog_compose build tor loopback-proxy
   eog_record_tor_identity
   eog_compose up -d --remove-orphans
   systemctl start "${EOG_SERVICE_NAME}" || true

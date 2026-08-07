@@ -2,10 +2,11 @@
 
 ## Network
 
-- Gitea publishes HTTP only on `127.0.0.1` on the host.
+- Host HTTP is published only on `127.0.0.1` via the `loopback-proxy` sidecar.
 - Tor SOCKS is internal to Compose and must not be published on the host.
 - Gitea attaches only to the `internal` Compose network (`internal: true`).
-- Tor attaches to `internal` and `egress`.
+- Docker does not wire host port mappings for containers on internal-only networks, so `loopback-proxy` attaches to `internal` plus a non-internal `publish` network and forwards to Gitea's static IP.
+- Tor attaches to `internal` and `egress`. Gitea must never attach to `egress` or `publish`.
 - Application egress uses SOCKS to `tor:9050` with remote hostname resolution.
 
 ## Gitea defaults

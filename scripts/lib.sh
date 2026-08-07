@@ -357,6 +357,7 @@ eog_refresh_static_files() {
   mkdir -p "${EOG_INSTALL_ROOT}/scripts" "${EOG_INSTALL_ROOT}/bin"
   install -m 0644 "${root}/compose.yml" "${EOG_INSTALL_ROOT}/compose.yml"
   install -m 0644 "${root}/Dockerfile.tor" "${EOG_INSTALL_ROOT}/Dockerfile.tor"
+  install -m 0644 "${root}/Dockerfile.loopback" "${EOG_INSTALL_ROOT}/Dockerfile.loopback"
   install -m 0644 "${root}/images.lock" "${EOG_INSTALL_ROOT}/images.lock"
   install -m 0644 "${root}/config/torrc" "${EOG_INSTALL_ROOT}/config/torrc"
   install -m 0644 "${root}/config/app.ini.tmpl" "${EOG_INSTALL_ROOT}/config/app.ini.tmpl"

@@ -3,9 +3,11 @@
 GITEA_IMAGE=gitea/gitea:1.27.1@sha256:34e3f6b75f5cbb6aebce588037fc5a53c84213e4d4b00da0a8d73e031a558e52
 GITEA_VERSION=1.27.1
 
-# Tor image is built locally from Dockerfile.tor
+# Tor and loopback-proxy images are built locally from Dockerfiles.
 DEBIAN_BASE_IMAGE=debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
 TOR_APT_SUITE=bookworm
 TOR_PACKAGE_VERSION=0.4.9.11-1~d12.bookworm+1
 TOR_IMAGE_NAME=easy-onion-gitea-tor
 TOR_IMAGE_TAG=0.1.0
+LOOPBACK_IMAGE_NAME=easy-onion-gitea-loopback
+LOOPBACK_IMAGE_TAG=0.1.0

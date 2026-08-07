@@ -143,6 +143,7 @@ eog_refresh_static_files "${ROOT}"
 install -m 0644 "${ROOT}/config.env.example" "${EOG_INSTALL_ROOT}/config.env.example"
 
 TOR_IMAGE="${TOR_IMAGE_NAME}:${TOR_IMAGE_TAG}"
+LOOPBACK_IMAGE="${LOOPBACK_IMAGE_NAME}:${LOOPBACK_IMAGE_TAG}"
 GITEA_IMAGE_PIN="${GITEA_IMAGE}"
 
 cat >"${EOG_INSTALL_ROOT}/config.env" <<EOF
@@ -153,6 +154,7 @@ ADMIN_USER=${ADMIN_USER_FINAL}
 REQUIRE_2FA=${REQUIRE_2FA_FINAL}
 GITEA_IMAGE=${GITEA_IMAGE_PIN}
 TOR_IMAGE=${TOR_IMAGE}
+LOOPBACK_IMAGE=${LOOPBACK_IMAGE}
 DEBIAN_BASE_IMAGE=${DEBIAN_BASE_IMAGE}
 TOR_APT_SUITE=${TOR_APT_SUITE}
 TOR_PACKAGE_VERSION=${TOR_PACKAGE_VERSION}
@@ -169,8 +171,8 @@ eog_write_secrets_if_missing
 
 systemctl enable easy-onion-gitea.service
 
-eog_info "Building Tor image..."
-eog_compose build tor
+eog_info "Building Tor and loopback-proxy images..."
+eog_compose build tor loopback-proxy
 eog_record_tor_identity
 eog_ensure_dirs
 

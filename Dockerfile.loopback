@@ -1,0 +1,19 @@
+# Loopback HTTP publish helper for easy-onion-gitea.
+# Docker does not wire host port publishes for containers that only attach to
+# internal:true networks. This sidecar binds the host loopback mapping and
+# forwards TCP to Gitea's static address on the internal network.
+ARG DEBIAN_BASE_IMAGE=debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
+FROM ${DEBIAN_BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends socat \
+  && rm -rf /var/lib/apt/lists/*
+
+USER nobody
+
+EXPOSE 3000
+
+# Target matches compose gitea ipv4_address on the internal network.
+CMD ["socat", "TCP-LISTEN:3000,fork,reuseaddr", "TCP:172.30.0.10:3000"]

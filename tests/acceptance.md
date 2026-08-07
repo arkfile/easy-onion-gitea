@@ -18,8 +18,10 @@ Run on a disposable Debian/Ubuntu VM with Docker available.
 
 1. `sudo eog-admin doctor` reports direct clearnet egress blocked with proxies cleared.
 2. Doctor reports Gitea resolves `tor` and can reach Tor SOCKS when `nc` is available.
-3. With Tor stopped (`docker compose stop tor`), clearnet/onion mirror attempts fail closed.
-4. Clearnet migrate is rejected until `ALLOWED_DOMAINS` is extended and `sudo eog-admin apply-config` is run.
+3. Doctor reports Gitea is attached only to the internal Compose network (not egress/publish).
+4. `docker compose ps` shows host port mapping on `loopback-proxy`, not on `gitea`.
+5. With Tor stopped (`docker compose stop tor`), clearnet/onion mirror attempts fail closed.
+6. Clearnet migrate is rejected until `ALLOWED_DOMAINS` is extended and `sudo eog-admin apply-config` is run.
 
 ## Operations
 
