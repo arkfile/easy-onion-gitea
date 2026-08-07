@@ -1,5 +1,6 @@
 # Tor configuration for easy-onion-gitea (v3 onion only).
-User debian-tor
+# Do not set User here: the image already runs as debian-tor (USER), and
+# User + cap_drop ALL fails with "Error setting groups ... Operation not permitted".
 DataDirectory /var/lib/tor
 PidFile /var/lib/tor/tor.pid
 

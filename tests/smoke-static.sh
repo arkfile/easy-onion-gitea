@@ -29,6 +29,7 @@ check "app template proxy" grep -q 'socks5h://tor:9050' config/app.ini.tmpl
 check "app template SECRET_KEY_URI" grep -q 'SECRET_KEY_URI = file:/run/eog-secrets/secret_key' config/app.ini.tmpl
 check "torrc hidden service v3" grep -q 'HiddenServiceVersion 3' config/torrc
 check "torrc HiddenServicePort uses static IP" grep -q 'HiddenServicePort 80 172.30.0.10:3000' config/torrc
+check "torrc does not set User (image USER already drops)" bash -c "! grep -qE '^[[:space:]]*User[[:space:]]' config/torrc"
 check "compose pins gitea ipv4_address" grep -q 'ipv4_address: 172.30.0.10' compose.yml
 check "compose internal subnet" grep -q 'subnet: 172.30.0.0/24' compose.yml
 check "scripts executable" test -x install.sh && test -x bin/eog-admin && test -x bin/eogit
