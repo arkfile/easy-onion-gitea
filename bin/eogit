@@ -45,11 +45,14 @@ doctor() {
     fi
   fi
   if command -v curl >/dev/null 2>&1; then
-    if curl -fsS --max-time 30 --proxy "${proxy}" https://check.torproject.org/api/ip >/dev/null 2>&1; then
-      printf 'OK  Tor proxy fetch via %s\n' "${proxy}"
-    else
-      die "Tor connectivity check failed via ${proxy}"
+    local err
+    if ! err="$(curl -fsS --max-time 30 --proxy "${proxy}" -o /dev/null https://check.torproject.org/api/ip 2>&1)"; then
+      if [[ -n ${err} ]]; then
+        printf '%s\n' "${err}" >&2
+      fi
+      die "Tor connectivity check failed via ${proxy}. If Tor just started, it may still be bootstrapping. journalctl -u tor.service should show Bootstrapped 100%."
     fi
+    printf 'OK  Tor proxy fetch via %s\n' "${proxy}"
   fi
   printf 'OK  GIT_ALLOW_PROTOCOL will be http:https\n'
   printf 'OK  proxy=%s\n' "${proxy}"

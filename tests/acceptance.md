@@ -37,7 +37,7 @@ Run on a disposable Debian/Ubuntu VM with Docker available.
 
 ## Client
 
-1. `sudo ./install-client.sh` then `eogit doctor`.
+1. `sudo ./install-client.sh` waits through first Tor bootstrap, then `eogit doctor` passes.
 2. `eogit clone` over onion with a PAT.
 3. `EOGIT_TOR_PROXY=socks5h://127.0.0.1:9150` override path.
 4. SSH remote rejected / not used via GIT_ALLOW_PROTOCOL.

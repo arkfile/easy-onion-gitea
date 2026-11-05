@@ -10,7 +10,7 @@ On Debian or Ubuntu:
 sudo ./install-client.sh
 ```
 
-This installs the distribution `tor` package if needed, enables it, installs `/usr/local/bin/eogit`, and runs `eogit doctor`.
+This installs the distribution `tor` package if needed, enables it, waits until Tor can carry traffic, installs `/usr/local/bin/eogit`, and runs `eogit doctor`. A fresh Tor daemon opens its SOCKS port before bootstrap finishes, so the first install can take a few minutes.
 
 ## Usage
 

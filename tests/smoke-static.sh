@@ -38,6 +38,8 @@ check "torrc does not set User (image USER already drops)" bash -c "! grep -qE '
 check "compose pins gitea ipv4_address" grep -q 'ipv4_address: 172.30.0.10' compose.yml
 check "compose internal subnet" grep -q 'subnet: 172.30.0.0/24' compose.yml
 check "scripts executable" test -x install.sh && test -x bin/eog-admin && test -x bin/eogit
+check "client install waits for tor bootstrap" grep -q 'Waiting for Tor to finish bootstrap' install-client.sh
+check "eogit doctor reports bootstrap hint" grep -q 'Bootstrapped 100%' bin/eogit
 check "install complete marker helper" grep -q 'eog_mark_install_complete' scripts/lib.sh
 check "installer clears stale systemd state" grep -q 'systemctl stop easy-onion-gitea.service' install.sh
 check "installer restarts full stack" grep -q 'systemctl restart easy-onion-gitea.service' install.sh

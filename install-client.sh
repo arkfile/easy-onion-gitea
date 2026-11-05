@@ -49,6 +49,31 @@ for _ in $(seq 1 30); do
 done
 [[ ${ok} -eq 1 ]] || die "Tor SOCKS listener not available on 127.0.0.1:9050"
 
+# The SOCKS port opens before circuits exist. A new /var/lib/tor rejects
+# the first proxied fetches until bootstrap finishes, so retry the same
+# check eogit doctor uses.
+info "Waiting for Tor to finish bootstrap..."
+deadline=$((SECONDS + 180))
+boot_ok=0
+last_err=""
+while ((SECONDS < deadline)); do
+  if last_err="$(sudo -u "${SUDO_USER}" curl -fsS --max-time 10 --proxy socks5h://127.0.0.1:9050 -o /dev/null https://check.torproject.org/api/ip 2>&1)"; then
+    boot_ok=1
+    break
+  fi
+  info "Tor SOCKS is up; circuits are not ready yet."
+  if ((SECONDS + 5 >= deadline)); then
+    break
+  fi
+  sleep 5
+done
+if [[ ${boot_ok} -ne 1 ]]; then
+  if [[ -n ${last_err} ]]; then
+    printf '%s\n' "${last_err}" >&2
+  fi
+  die "Tor did not become usable via socks5h://127.0.0.1:9050. Check: journalctl -u tor.service"
+fi
+
 install -m 0755 "${ROOT}/bin/eogit" /usr/local/bin/eogit
 install -d -m 0755 /usr/local/share/doc/easy-onion-gitea
 [[ -f "${ROOT}/docs/eogit.md" ]] && install -m 0644 "${ROOT}/docs/eogit.md" /usr/local/share/doc/easy-onion-gitea/eogit.md
